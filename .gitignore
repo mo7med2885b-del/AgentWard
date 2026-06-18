@@ -1,0 +1,47 @@
+# ============================================================
+# SECRETS — never commit. (API keys, Band keys, env files)
+# ============================================================
+.env
+.env.*
+!.env.example
+!.env.local.example
+**/.env
+**/.env.local
+**/.env*.local
+.streamlit/secrets.toml
+*secrets*.toml
+!*secrets.example.toml
+
+# ============================================================
+# Node / Next.js
+# ============================================================
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+
+# ============================================================
+# Python (legacy, if any remains)
+# ============================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ============================================================
+# OS / IDE / logs
+# ============================================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# ============================================================
+# The cloned competitor repo — reference only, don't publish
+# ============================================================
+example/

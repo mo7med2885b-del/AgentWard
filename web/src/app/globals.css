@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cream: #f0e7d5;
+  --cream-soft: #f6f0e4;
+  --navy: #1e2a44;
+  --line: #d8ccb4;
+}
+
+html {
+  background: var(--cream);
+  color: var(--navy);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background:
+    radial-gradient(115% 75% at 85% -10%, rgba(30, 42, 68, 0.06), transparent 55%),
+    radial-gradient(80% 55% at 0% 110%, rgba(31, 125, 114, 0.05), transparent 50%),
+    var(--cream);
+  min-height: 100dvh;
+}
+
+/* Thin scrollbar tuned to the cream theme. */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d3c5a8; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #c4b393; }
+
+/* Markdown rendering inside agent bubbles. */
+.md h1, .md h2, .md h3, .md strong { color: var(--navy); }
+.md p { margin: 0.4rem 0; line-height: 1.65; }
+.md ul { margin: 0.4rem 0; padding-left: 1.1rem; list-style: disc; }
+.md li { margin: 0.2rem 0; }
+.md code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  background: #e7dbc4;
+  padding: 0.05rem 0.35rem;
+  border-radius: 5px;
+  font-size: 0.85em;
+  color: #1e2a44;
+}
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 0.8rem 0; }
