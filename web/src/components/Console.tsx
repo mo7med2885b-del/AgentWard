@@ -427,7 +427,7 @@ function EmptyState({ onSample, disabled }: { onSample: () => void; disabled: bo
         <ListChecks size={26} weight="duotone" />
       </div>
       <h2 className="text-xl font-bold tracking-tight text-navy">
-        AgentWard Command Console
+        Present a patient case
       </h2>
       <p className="mt-2 max-w-lg text-sm text-navy/60 leading-relaxed">
         Submit a patient case to orchestrate a live, self-correcting clinical diagnostic and management pipeline. 
