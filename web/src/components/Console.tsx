@@ -24,7 +24,7 @@ import { TriagePanel } from "./dashboard/TriagePanel";
 import { CarePlanPanel } from "./dashboard/CarePlanPanel";
 import { EhrPanel } from "./dashboard/EhrPanel";
 import { HitlOverlay, type HitlDecision } from "./dashboard/HitlOverlay";
-import { SafetyAlert, CorrectionBanner } from "./dashboard/Alerts";
+import { SafetyAlert, SafetyClear, CorrectionBanner } from "./dashboard/Alerts";
 import { AgentRawCard } from "./AgentMessage";
 
 const idleStates = (): Record<AgentId, StageState> =>
@@ -49,6 +49,7 @@ export function Console() {
   const [paused, setPaused] = useState(false);
   const [runId, setRunId] = useState("");
   const [safety, setSafety] = useState("");
+  const [safetyClear, setSafetyClear] = useState("");
   const [correcting, setCorrecting] = useState("");
 
   // Live token preview per agent (accumulated deltas, cleared when step lands).
@@ -123,7 +124,14 @@ export function Console() {
       setCorrecting(ev.message ?? "Observer flagged an issue — regenerating plan…");
       if (ev.agent) setStates((s) => ({ ...s, [ev.agent as AgentId]: "active" }));
     } else if (ev.type === "safety_alert") {
-      setSafety(ev.message ?? "Potential medication contraindication detected.");
+      const msg = ev.message ?? "Potential medication contraindication detected.";
+      if (msg.startsWith("__CLEAR__")) {
+        setSafety("");
+        setSafetyClear(msg.replace("__CLEAR__", ""));
+      } else {
+        setSafetyClear("");
+        setSafety(msg);
+      }
     } else if (ev.type === "error") {
       setError(ev.message ?? "Unknown error");
     } else if (ev.type === "done") {
@@ -138,6 +146,7 @@ export function Console() {
       setRunning(true);
       setError("");
       setSafety("");
+      setSafetyClear("");
       setCorrecting("");
       setPaused(false);
       setStates(idleStates());
@@ -244,7 +253,7 @@ export function Console() {
       <form onSubmit={onSubmit}>
         <div className="flex flex-col gap-2 rounded-3xl border border-navy/20 bg-cream-soft p-3 md:flex-row md:items-end">
           <textarea
-            value={input}
+            value={running ? caseText : input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -309,6 +318,7 @@ export function Console() {
       {/* Live alerts */}
       <AnimatePresence>
         {safety && <SafetyAlert key="safety" message={safety} />}
+        {!safety && safetyClear && <SafetyClear key="safety-clear" message={safetyClear} />}
         {correcting && <CorrectionBanner key="correcting" message={correcting} />}
       </AnimatePresence>
 

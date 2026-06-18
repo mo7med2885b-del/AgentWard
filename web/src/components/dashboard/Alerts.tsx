@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Warning, ArrowsClockwise } from "@phosphor-icons/react";
+import { Warning, ArrowsClockwise, ShieldCheck } from "@phosphor-icons/react";
 
 /** Blinking critical banner for medication/allergy contraindications. */
 export function SafetyAlert({ message }: { message: string }) {
@@ -25,6 +25,28 @@ export function SafetyAlert({ message }: { message: string }) {
           </div>
           <div className="text-sm font-medium text-navy">{message}</div>
         </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/** Reassuring "all clear" banner shown when no allergy/contraindication found. */
+export function SafetyClear({ message }: { message: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      className="flex items-center gap-3 rounded-2xl border border-mgmt/30 bg-mgmt/5 px-4 py-3"
+    >
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-mgmt text-white">
+        <ShieldCheck size={18} weight="fill" />
+      </span>
+      <div>
+        <div className="font-mono text-[10px] font-semibold uppercase tracking-widest text-mgmt">
+          Allergy check passed
+        </div>
+        <div className="text-sm font-medium text-navy">{message}</div>
       </div>
     </motion.div>
   );

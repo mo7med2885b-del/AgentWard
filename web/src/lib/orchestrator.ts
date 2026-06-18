@@ -39,7 +39,16 @@ export interface ResumeData {
 export interface PendingRun {
   resolve: (value: ResumeData) => void;
 }
-export const pendingRuns = new Map<string, PendingRun>();
+// Stored on globalThis so the /api/run and /api/run/resume route modules share
+// ONE Map. Next.js can instantiate route modules separately (esp. in dev), so a
+// plain module-level `new Map()` would give each route its own copy — the
+// resume would never find the paused run (404 "Run not found"). The global
+// singleton guarantees both routes see the same pending-run registry.
+const globalForRuns = globalThis as unknown as {
+  __agentwardPendingRuns?: Map<string, PendingRun>;
+};
+export const pendingRuns: Map<string, PendingRun> =
+  globalForRuns.__agentwardPendingRuns ?? (globalForRuns.__agentwardPendingRuns = new Map());
 
 // ── ALLERGY SAFETY CHECKER ─────────────────────────────────────────────────
 function checkAllergies(patientCase: string): { allergy: string; warnings: string[] } | null {
@@ -252,12 +261,18 @@ async function* runCascadeInner(
   // Use roomId or create a random runId for tracking state
   const runId = roomId || `run-${Math.random().toString(36).substring(2, 11)}`;
 
-  // 1. ALLERGY SAFETY CHECKER
+  // 1. ALLERGY SAFETY CHECKER — always report a status so the clinician knows
+  // the check ran, even when nothing is flagged.
   const allergyInfo = checkAllergies(patientCase);
   if (allergyInfo) {
     yield {
       type: "safety_alert",
       message: `Patient has suspected allergy to: ${allergyInfo.allergy.toUpperCase()}. Avoid: ${allergyInfo.warnings.join(", ")}.`,
+    };
+  } else {
+    yield {
+      type: "safety_alert",
+      message: "__CLEAR__No medication allergies detected in the case. Standard formulary applies.",
     };
   }
 
