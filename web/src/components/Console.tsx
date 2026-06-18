@@ -422,26 +422,74 @@ function LiveStream({ agent, text }: { agent: AgentId; text: string }) {
 
 function EmptyState({ onSample, disabled }: { onSample: () => void; disabled: boolean }) {
   return (
-    <div className="flex min-h-[42dvh] flex-col items-center justify-center rounded-3xl border border-dashed border-navy-line bg-cream-soft/40 px-6 text-center">
-      <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border border-navy/15 bg-cream-soft text-navy">
+    <div className="flex min-h-[46dvh] flex-col items-center justify-center rounded-3xl border border-dashed border-navy-line bg-cream-soft/40 px-6 py-10 text-center">
+      <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border border-navy/15 bg-cream-soft text-navy shadow-sm">
         <ListChecks size={26} weight="duotone" />
       </div>
-      <h2 className="text-lg font-semibold tracking-tight text-navy">
-        Emergency Clinical Command Center
+      <h2 className="text-xl font-bold tracking-tight text-navy">
+        AgentWard Command Console
       </h2>
-      <p className="mt-1 max-w-md text-sm text-navy/55">
-        Present a patient and five specialist agents will triage, plan management,
-        prioritise investigations, draft the EHR note, and audit each other — coordinated
-        live over Band.
+      <p className="mt-2 max-w-lg text-sm text-navy/60 leading-relaxed">
+        Submit a patient case to orchestrate a live, self-correcting clinical diagnostic and management pipeline. 
+        Five specialist agents will coordinate over the Band SDK:
       </p>
+
+      {/* Visual Pipeline Grid for UX improvement */}
+      <div className="mt-8 grid gap-3 sm:grid-cols-5 max-w-4xl w-full text-left">
+        <div className="rounded-2xl border border-triage/20 bg-triage/[0.02] p-3.5 flex flex-col justify-between">
+          <div>
+            <span className="font-mono text-[9px] font-bold text-triage uppercase tracking-wider block mb-1">01. Triage</span>
+            <h4 className="text-xs font-bold text-navy">Severity Scoring</h4>
+            <p className="text-[11px] text-navy/60 mt-1 leading-normal">Assigns ATS level and logs initial clinical rationale.</p>
+          </div>
+          <span className="font-mono text-[10px] text-triage/80 mt-3 font-semibold">Sonnet 4.6</span>
+        </div>
+
+        <div className="rounded-2xl border border-mgmt/20 bg-mgmt/[0.02] p-3.5 flex flex-col justify-between">
+          <div>
+            <span className="font-mono text-[9px] font-bold text-mgmt uppercase tracking-wider block mb-1">02. Plan</span>
+            <h4 className="text-xs font-bold text-navy">Management</h4>
+            <p className="text-[11px] text-navy/60 mt-1 leading-normal">Generates care plans with hard allergy safety checks.</p>
+          </div>
+          <span className="font-mono text-[10px] text-mgmt/80 mt-3 font-semibold">DeepSeek-V4</span>
+        </div>
+
+        <div className="rounded-2xl border border-navy/25 bg-navy/[0.02] p-3.5 flex flex-col justify-between">
+          <div>
+            <span className="font-mono text-[9px] font-bold text-navy/60 uppercase tracking-wider block mb-1">03. Tests</span>
+            <h4 className="text-xs font-bold text-navy">Investigations</h4>
+            <p className="text-[11px] text-navy/60 mt-1 leading-normal">Prioritises labs, imaging, and bedside diagnostics.</p>
+          </div>
+          <span className="font-mono text-[10px] text-navy/60 mt-3 font-semibold text-navy/80">Mistral-24B</span>
+        </div>
+
+        <div className="rounded-2xl border border-doc/20 bg-doc/[0.02] p-3.5 flex flex-col justify-between">
+          <div>
+            <span className="font-mono text-[9px] font-bold text-doc uppercase tracking-wider block mb-1">04. EHR Note</span>
+            <h4 className="text-xs font-bold text-navy">Documentation</h4>
+            <p className="text-[11px] text-navy/60 mt-1 leading-normal">Compiles case into a standard structured EHR record.</p>
+          </div>
+          <span className="font-mono text-[10px] text-doc/80 mt-3 font-semibold">Qwen-32B</span>
+        </div>
+
+        <div className="rounded-2xl border border-observer/20 bg-observer/[0.02] p-3.5 flex flex-col justify-between">
+          <div>
+            <span className="font-mono text-[9px] font-bold text-observer uppercase tracking-wider block mb-1">05. Audit</span>
+            <h4 className="text-xs font-bold text-navy">Observer loop</h4>
+            <p className="text-[11px] text-navy/60 mt-1 leading-normal">Monitors compliance and triggers self-correction loop.</p>
+          </div>
+          <span className="font-mono text-[10px] text-observer/80 mt-3 font-semibold">Mistral-24B</span>
+        </div>
+      </div>
+
       <button
         type="button"
         onClick={onSample}
         disabled={disabled}
-        className="mt-5 flex items-center gap-2 rounded-2xl bg-navy px-5 py-3 text-sm font-semibold text-cream transition active:scale-[0.98] disabled:opacity-50"
+        className="mt-8 flex items-center gap-2 rounded-2xl bg-navy px-6 py-3.5 text-sm font-semibold text-cream transition hover:bg-navy-soft active:scale-[0.98] disabled:opacity-50 shadow-md"
       >
         <Sparkle size={16} weight="fill" />
-        Run sample case
+        Run sample clinical case
       </button>
     </div>
   );
