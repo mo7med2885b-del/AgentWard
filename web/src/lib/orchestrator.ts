@@ -24,15 +24,52 @@ const AGENT_KEYS: Record<AgentId, string> = {
 };
 
 // ── ANTI-LOOP SAFEGUARDS ──────────────────────────────────────────────────
-// The cascade is a FIXED linear sequence and can never call an agent twice,
-// but these guards make runaway usage structurally impossible:
-//   1. A global run-lock: only ONE cascade can execute at a time. A second
-//      request while one is running is rejected immediately (no overlap, no
-//      accidental fan-out of LLM calls).
-//   2. A hard step ceiling: the loop body cannot execute more than MAX_STEPS
-//      times no matter what — a circuit breaker against any future regression.
-const MAX_STEPS = 5;
+// The cascade has safeguards:
+//   1. A global run-lock: only ONE cascade can execute at a time.
+//   2. A hard step ceiling: the loop body cannot execute more than MAX_STEPS times.
+const MAX_STEPS = 12; // Increased to 12 to support Self-Correction loops
 let cascadeRunning = false;
+
+// ── HUMAN-IN-THE-LOOP STATE ────────────────────────────────────────────────
+export interface ResumeData {
+  approved: boolean;
+  atsOverride?: number;
+  note?: string;
+}
+export interface PendingRun {
+  resolve: (value: ResumeData) => void;
+}
+export const pendingRuns = new Map<string, PendingRun>();
+
+// ── ALLERGY SAFETY CHECKER ─────────────────────────────────────────────────
+function checkAllergies(patientCase: string): { allergy: string; warnings: string[] } | null {
+  const lowercase = patientCase.toLowerCase();
+  const allergiesMap: Record<string, string[]> = {
+    penicillin: ["Penicillin", "Amoxicillin", "Ampicillin", "Piperacillin", "Tazobactam"],
+    aspirin: ["Aspirin", "ASA", "Acetylsalicylic acid"],
+    sulfa: ["Bactrim", "Sulfamethoxazole", "Septra"],
+    morphine: ["Morphine", "Codeine", "Oxycodone", "Hydrocodone"],
+    nsaid: ["Ibuprofen", "Naproxen", "Ketorolac", "Aspirin"],
+    contrast: ["Iodinated contrast", "CT contrast media"],
+  };
+
+  for (const [key, drugs] of Object.entries(allergiesMap)) {
+    if (lowercase.includes(key)) {
+      return {
+        allergy: key,
+        warnings: drugs,
+      };
+    }
+  }
+  return null;
+}
+
+const AGENT_NAME_TO_ID: Record<string, AgentId> = {
+  Triage: "triage",
+  Management: "management",
+  Investigation: "investigation",
+  Documentation: "documentation",
+};
 
 function nowStr(): string {
   const d = new Date(Date.now() + 3 * 3600 * 1000); // UTC+3
@@ -40,9 +77,6 @@ function nowStr(): string {
 }
 
 function maxTokensFor(agent: AgentId): number {
-  // Gemini-3.5-flash + qwen are reasoning models that spend tokens "thinking"
-  // before the visible answer, so budgets must be generous or content comes
-  // back empty. Management/Documentation produce long output too.
   if (agent === "management" || agent === "documentation") return 6000;
   return 4000;
 }
@@ -52,7 +86,8 @@ async function runAgent(
   agent: AgentId,
   userMsg: string,
   mentionNext: AgentId | null,
-  roomId?: string
+  roomId?: string,
+  temperatureOverride?: number
 ): Promise<CascadeStep> {
   const meta = AGENTS[agent];
   let systemPrompt = SYSTEM_PROMPTS[agent];
@@ -60,7 +95,7 @@ async function runAgent(
 
   const startedAt = new Date().toISOString();
   const result = await completeForAgent(agent, systemPrompt, userMsg, {
-    temperature: agent === "triage" ? 0.1 : 0.2,
+    temperature: temperatureOverride ?? (agent === "triage" ? 0.1 : 0.2),
     maxTokens: maxTokensFor(agent),
   });
   const finishedAt = new Date().toISOString();
@@ -88,7 +123,6 @@ export async function* runCascade(
   patientCase: string,
   opts?: { newRoom?: boolean }
 ): AsyncGenerator<CascadeEvent> {
-  // ── RUN-LOCK: refuse to start a second cascade while one is in flight. ──
   if (cascadeRunning) {
     yield {
       type: "error",
@@ -97,10 +131,9 @@ export async function* runCascade(
     return;
   }
   cascadeRunning = true;
-  let stepCount = 0; // hard ceiling guard
+  let stepCount = 0;
 
   try {
-    // Optionally spin up a fresh Band room for this conversation.
     let roomId: string | undefined;
     if (opts?.newRoom) {
       yield { type: "status", message: "Creating a fresh Band room…" };
@@ -120,7 +153,7 @@ export async function* runCascade(
       }
     });
   } finally {
-    cascadeRunning = false; // always release the lock, even on error/abort
+    cascadeRunning = false;
   }
 }
 
@@ -129,9 +162,25 @@ async function* runCascadeInner(
   roomId: string | undefined,
   countStep: () => void
 ): AsyncGenerator<CascadeEvent> {
-  const caseBlock = `PATIENT CASE:\n${patientCase}`;
+  // Use roomId or create a random runId for tracking state
+  const runId = roomId || `run-${Math.random().toString(36).substring(2, 11)}`;
 
-  // ── PHASE 1: Triage + Management in PARALLEL (both from the raw case) ──
+  // 1. ALLERGY SAFETY CHECKER
+  const allergyInfo = checkAllergies(patientCase);
+  if (allergyInfo) {
+    yield {
+      type: "safety_alert",
+      message: `Patient has suspected allergy to: ${allergyInfo.allergy.toUpperCase()}. Avoid: ${allergyInfo.warnings.join(", ")}.`,
+    };
+  }
+
+  let caseBlock = `PATIENT CASE:\n${patientCase}`;
+  let finalManagementCaseBlock = caseBlock;
+  if (allergyInfo) {
+    finalManagementCaseBlock += `\n\nCRITICAL SAFETY WARNING: Patient is allergic to ${allergyInfo.allergy.toUpperCase()}. DO NOT prescribe or recommend any of the following medications: ${allergyInfo.warnings.join(", ")}. If these drugs would normally be indicated, you MUST specify a safe alternative class of drug and clearly document the reason for the substitution.`;
+  }
+
+  // ── PHASE 1: Triage + Management in PARALLEL ──
   yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "TriageAgent is working…" };
   yield {
     type: "status",
@@ -140,7 +189,6 @@ async function* runCascadeInner(
     message: "ManagementAgent searching PubMed + guidelines…",
   };
 
-  // Gather evidence for management while both LLM calls run.
   const evidencePromise = Promise.all([
     gatherEvidence(patientCase + " emergency management guidelines"),
     trustedMedicalSearch(patientCase + " management guideline"),
@@ -148,16 +196,14 @@ async function* runCascadeInner(
 
   const triagePromise = runAgent("triage", caseBlock, "investigation", roomId);
   const managementPromise = evidencePromise.then((evidence) =>
-    runAgent("management", caseBlock + evidence, "investigation", roomId)
+    runAgent("management", finalManagementCaseBlock + evidence, "investigation", roomId)
   );
 
-  // Settle both; surface each as it finishes (triage is usually faster).
   const results = await Promise.allSettled([triagePromise, managementPromise]);
 
   let triageStep: CascadeStep | null = null;
   let managementStep: CascadeStep | null = null;
 
-  // Emit in a stable order (triage then management) once both settle.
   const [triageRes, mgmtRes] = results;
   if (triageRes.status === "fulfilled") {
     countStep();
@@ -174,36 +220,157 @@ async function* runCascadeInner(
     yield { type: "error", agent: "management", agentName: "ManagementAgent", message: String(mgmtRes.reason) };
   }
 
-  if (!triageStep && !managementStep) return; // total failure
+  if (!triageStep && !managementStep) return;
 
-  // Accumulated context for the sequential phase.
+  // ── HUMAN-IN-THE-LOOP PAUSE POINT ──
+  yield {
+    type: "pause",
+    runId,
+    message: "Triage and Initial Management Plan ready for clinician verification.",
+  };
+
+  const resumePromise = new Promise<ResumeData>((resolve) => {
+    pendingRuns.set(runId, { resolve });
+  });
+
+  const resumeData = await resumePromise;
+  pendingRuns.delete(runId);
+
+  let triageContent = triageStep?.content || "";
+  let managementContent = managementStep?.content || "";
+
+  if (resumeData.approved) {
+    if (resumeData.atsOverride) {
+      const waitTimes = [0, 0, 10, 30, 60, 120];
+      triageContent = `TRIAGE: ATS ${resumeData.atsOverride} | Clinician Overridden | Max wait: ${waitTimes[resumeData.atsOverride]} minutes\n**SUMMARY:** [Clinician Overridden] Case prioritisation verified and adjusted by doctor.`;
+      if (triageStep) {
+        triageStep.content = triageContent;
+        yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
+      }
+    }
+  }
+
   const transcript: string[] = [caseBlock];
-  if (triageStep) transcript.push(`TriageAgent OUTPUT:\n${triageStep.content}`);
-  if (managementStep) transcript.push(`ManagementAgent OUTPUT:\n${managementStep.content}`);
+  if (triageContent) transcript.push(`TriageAgent OUTPUT:\n${triageContent}`);
+  if (managementContent) transcript.push(`ManagementAgent OUTPUT:\n${managementContent}`);
+  if (resumeData.approved && resumeData.note) {
+    transcript.push(`CLINICIAN INPUT:\n${resumeData.note}`);
+  }
 
-  // ── PHASE 2: Investigation -> Documentation -> Observer (SEQUENTIAL) ──
-  const sequential: { id: AgentId; next: AgentId | null }[] = [
-    { id: "investigation", next: "documentation" },
-    { id: "documentation", next: "observer" },
-    { id: "observer", next: null },
-  ];
+  // Helper to compile transcript for sequential agents
+  let investigationContent = "";
+  let documentationContent = "";
+  let observerContent = "";
 
-  for (const { id, next } of sequential) {
-    const meta = AGENTS[id];
-    yield { type: "status", agent: id, agentName: meta.name, message: `${meta.name} is working…` };
-    try {
-      countStep();
-      const step = await runAgent(id, transcript.join("\n\n---\n\n"), next, roomId);
-      transcript.push(`${meta.name} OUTPUT:\n${step.content}`);
-      yield { type: "step", agent: id, agentName: meta.name, step };
-    } catch (err) {
-      yield {
-        type: "error",
-        agent: id,
-        agentName: meta.name,
-        message: err instanceof Error ? err.message : String(err),
-      };
-      return;
+  function compileTranscriptFor(target: AgentId): string {
+    const parts = [caseBlock];
+    if (triageContent) parts.push(`TriageAgent OUTPUT:\n${triageContent}`);
+    if (managementContent) parts.push(`ManagementAgent OUTPUT:\n${managementContent}`);
+    if (resumeData.approved && resumeData.note) parts.push(`CLINICIAN INPUT:\n${resumeData.note}`);
+    if (investigationContent && target !== "investigation") {
+      parts.push(`InvestigationAgent OUTPUT:\n${investigationContent}`);
+    }
+    if (documentationContent && target !== "documentation" && target !== "investigation") {
+      parts.push(`DocumentationAgent OUTPUT:\n${documentationContent}`);
+    }
+    return parts.join("\n\n---\n\n");
+  }
+
+  // ── PHASE 2: Initial Sequential Runs ──
+  yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "InvestigationAgent is working…" };
+  countStep();
+  let investigationStep = await runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
+  investigationContent = investigationStep.content;
+  yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
+
+  yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "DocumentationAgent is working…" };
+  countStep();
+  let documentationStep = await runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
+  documentationContent = documentationStep.content;
+  yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
+
+  // ── PHASE 3: Audit + Self-Correction Loop ──
+  const retriedAgents = new Set<AgentId>();
+  let observerStep: CascadeStep | null = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    yield { type: "status", agent: "observer", agentName: "ObserverAgent", message: `ObserverAgent auditing (Attempt ${attempt})…` };
+    countStep();
+    observerStep = await runAgent("observer", compileTranscriptFor("observer"), null, roomId);
+    observerContent = observerStep.content;
+    yield { type: "step", agent: "observer", agentName: "ObserverAgent", step: observerStep };
+
+    // Find lines matching "[!] Agent" indicating a failure
+    const failureMatches = [...observerContent.matchAll(/\[!\]\s*(Triage|Management|Investigation|Documentation)\s*—\s*(.*)/gi)];
+    
+    if (failureMatches.length === 0 || attempt === 2) {
+      break; // No failures or we already did the retry
+    }
+
+    // Identify first retryable failed agent
+    let agentToRetry: AgentId | null = null;
+    let failureReason = "";
+    for (const match of failureMatches) {
+      const name = match[1];
+      const reason = match[2];
+      const agentId = AGENT_NAME_TO_ID[name.charAt(0).toUpperCase() + name.slice(1).toLowerCase()];
+      if (agentId && !retriedAgents.has(agentId)) {
+        agentToRetry = agentId;
+        failureReason = reason;
+        break;
+      }
+    }
+
+    if (!agentToRetry) break;
+
+    retriedAgents.add(agentToRetry);
+
+    // Yield correcting event to client
+    yield {
+      type: "correcting",
+      agent: agentToRetry,
+      agentName: AGENTS[agentToRetry].name,
+      message: `Observer flagged error in ${AGENTS[agentToRetry].name}: "${failureReason}". Retrying with audit feedback...`,
+      auditFeedback: failureReason,
+    };
+
+    const correctionCritique = `\n\nCRITICAL QUALITY FEEDBACK FROM OBSERVER:\nYour previous attempt failed the quality audit with error: "${failureReason}".\nPlease regenerate your response and fix this issue completely.`;
+
+    if (agentToRetry === "triage") {
+      yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "Retrying TriageAgent with feedback…" };
+      triageStep = await runAgent("triage", caseBlock + correctionCritique, "investigation", roomId, 0.45);
+      triageContent = triageStep.content;
+      yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
+    } else if (agentToRetry === "management") {
+      yield { type: "status", agent: "management", agentName: "ManagementAgent", message: "Retrying ManagementAgent with feedback…" };
+      managementStep = await runAgent("management", finalManagementCaseBlock + (await evidencePromise) + correctionCritique, "investigation", roomId, 0.45);
+      managementContent = managementStep.content;
+      yield { type: "step", agent: "management", agentName: "ManagementAgent", step: managementStep };
+    } else if (agentToRetry === "investigation") {
+      yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "Retrying InvestigationAgent with feedback…" };
+      investigationStep = await runAgent("investigation", compileTranscriptFor("investigation") + correctionCritique, "documentation", roomId, 0.45);
+      investigationContent = investigationStep.content;
+      yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
+    } else if (agentToRetry === "documentation") {
+      yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "Retrying DocumentationAgent with feedback…" };
+      documentationStep = await runAgent("documentation", compileTranscriptFor("documentation") + correctionCritique, "observer", roomId, 0.45);
+      documentationContent = documentationStep.content;
+      yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
+    }
+
+    // Re-run downstream dependents
+    if (agentToRetry === "triage" || agentToRetry === "management") {
+      yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "Re-running InvestigationAgent downstream…" };
+      investigationStep = await runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
+      investigationContent = investigationStep.content;
+      yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
+    }
+
+    if (agentToRetry === "triage" || agentToRetry === "management" || agentToRetry === "investigation") {
+      yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "Re-running DocumentationAgent downstream…" };
+      documentationStep = await runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
+      documentationContent = documentationStep.content;
+      yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
     }
   }
 

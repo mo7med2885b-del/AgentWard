@@ -26,9 +26,34 @@ export interface CascadeStep {
 }
 
 export interface CascadeEvent {
-  type: "status" | "step" | "error" | "done";
+  type: "status" | "step" | "error" | "done" | "pause" | "correcting" | "safety_alert";
   agent?: AgentId;
   agentName?: string;
   message?: string;
   step?: CascadeStep;
+  runId?: string;
+  auditFeedback?: string;
+}
+
+// Parsed from TriageAgent output
+export interface TriageData {
+  atsLevel: 1 | 2 | 3 | 4 | 5;
+  category: string;
+  color: "RED" | "ORANGE" | "YELLOW" | "GREEN" | "WHITE";
+  maxWaitMinutes: number;
+  summary: string;
+}
+
+// Parsed from ManagementAgent output
+export interface ActionItem {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+// Parsed from InvestigationAgent output
+export interface Investigation {
+  priority: "STAT" | "URGENT" | "IMAGING" | "ECG";
+  test: string;
+  rationale: string;
 }
