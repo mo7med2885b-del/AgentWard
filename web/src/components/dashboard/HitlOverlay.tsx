@@ -60,9 +60,20 @@ export function HitlOverlay({
             The AI assigned{" "}
             <span className="font-semibold text-navy">
               ATS {currentAts ?? "?"}
+              {category ? ` · ${category}` : ""}
             </span>
             . Review before the management pipeline continues.
           </p>
+
+          {/* AI rationale — concise, for fast verification */}
+          {rationale && (
+            <div className="rounded-xl border border-navy-line bg-cream/40 px-3 py-2.5">
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-widest text-navy/50">
+                AI rationale
+              </div>
+              <p className="text-[0.85rem] leading-snug text-navy/80">{rationale}</p>
+            </div>
+          )}
 
           <div>
             <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-widest text-navy/55">

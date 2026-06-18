@@ -59,7 +59,11 @@ export function parseTriage(content: string): TriageData | null {
     summary = lines[0] || "";
   }
 
-  return { atsLevel, category, color, maxWaitMinutes, summary };
+  // Rationale: prefer the explicit **RATIONALE:** line; fall back to summary.
+  const ratMatch = content.match(/\*\*?rationale:?\*\*?\s*(.+)/i);
+  const rationale = ratMatch ? ratMatch[1].trim() : summary;
+
+  return { atsLevel, category, color, maxWaitMinutes, summary, rationale };
 }
 
 /** Extract checkable "Immediate Actions" from the ManagementAgent output. */

@@ -14,7 +14,6 @@ import type {
 } from "@/lib/types";
 import { AGENT_UI, PIPELINE, SAMPLE_CASE } from "@/lib/agent-ui";
 import {
-  detectAllergyConflict,
   parseActions,
   parseInvestigations,
   parseTriage,
@@ -234,7 +233,7 @@ export function Console() {
         {paused && (
           <HitlOverlay
             currentAts={triage?.atsLevel ?? null}
-            rationale={triage?.summary ?? ""}
+            rationale={triage?.rationale ?? triage?.summary ?? ""}
             category={triage?.category ?? ""}
             onResolve={resolveHitl}
           />

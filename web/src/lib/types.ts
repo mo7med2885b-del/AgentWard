@@ -51,6 +51,7 @@ export interface TriageData {
   color: "RED" | "ORANGE" | "YELLOW" | "GREEN" | "WHITE";
   maxWaitMinutes: number;
   summary: string;
+  rationale: string; // concise justification for the ATS level (for HITL verify)
 }
 
 // Parsed from ManagementAgent output
