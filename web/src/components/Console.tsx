@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { PaperPlaneRight, Sparkle, Plus, ListChecks, FlowArrow } from "@phosphor-icons/react";
 import type {
@@ -342,16 +342,17 @@ export function Console() {
             <PipelineRail states={states} layout="horizontal" />
           </div>
 
-          {/* Live token stream — shows agents typing in real time */}
+          {/* Live token stream — shows agents typing in real time. Triage is
+              rendered inside its own card, so it's excluded here. */}
           <AnimatePresence>
-            {PIPELINE.filter((id) => streaming[id]).map((id) => (
+            {PIPELINE.filter((id) => id !== "triage" && streaming[id]).map((id) => (
               <LiveStream key={id} agent={id} text={streaming[id]!} />
             ))}
           </AnimatePresence>
 
           {/* Three-column clinical command grid */}
           <div className="grid gap-5 lg:grid-cols-[320px_1fr_360px]">
-            <TriagePanel triage={triage} vitals={vitals} />
+            <TriagePanel triage={triage} vitals={vitals} liveText={streaming.triage} />
             <CarePlanPanel
               actions={actions}
               investigations={investigations}
@@ -394,11 +395,18 @@ export function Console() {
   );
 }
 
-// Live "typing" preview of an agent's tokens as they stream in. Shows a tail
-// of the text so long outputs stay readable without ballooning the layout.
+// Live "typing" preview of an agent's tokens as they stream in. Keeps the FULL
+// text (never truncates the front — that looked like text was being deleted)
+// and auto-scrolls to the newest line as it grows.
 function LiveStream({ agent, text }: { agent: AgentId; text: string }) {
   const ui = AGENT_UI[agent];
-  const tail = text.length > 600 ? "…" + text.slice(-600) : text;
+  const preRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    const el = preRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}
@@ -412,8 +420,11 @@ function LiveStream({ agent, text }: { agent: AgentId; text: string }) {
           {ui.label} · streaming
         </span>
       </div>
-      <pre className="max-h-40 overflow-hidden whitespace-pre-wrap px-4 pb-3 pt-1.5 font-mono text-[0.78rem] leading-relaxed text-navy/75">
-        {tail}
+      <pre
+        ref={preRef}
+        className="max-h-44 overflow-y-auto whitespace-pre-wrap px-4 pb-3 pt-1.5 font-mono text-[0.78rem] leading-relaxed text-navy/75"
+      >
+        {text}
         <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-navy/50 align-middle" />
       </pre>
     </motion.div>

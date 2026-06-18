@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Heartbeat, Timer, Warning } from "@phosphor-icons/react";
 import type { TriageData, Vital } from "@/lib/types";
 
@@ -57,9 +59,38 @@ function WaitClock({ minutes }: { minutes: number }) {
   );
 }
 
-export function TriagePanel({ triage, vitals }: { triage: TriageData | null; vitals: Vital[] }) {
+export function TriagePanel({
+  triage,
+  vitals,
+  liveText,
+}: {
+  triage: TriageData | null;
+  vitals: Vital[];
+  liveText?: string;
+}) {
+  // While the triage agent is still streaming and we have no parsed card yet,
+  // show the live tokens (markdown-rendered) inside the card area.
+  const streaming = !triage && !!liveText && liveText.trim().length > 0;
+
   return (
     <div className="space-y-4">
+      {/* Live triage stream — shown until the parsed urgency card is ready */}
+      {streaming && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="overflow-hidden rounded-3xl border border-triage/40 bg-cream-soft/80 px-5 py-4"
+        >
+          <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-triage">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-triage" />
+            Triage assessing…
+          </div>
+          <div className="md text-[0.9rem] leading-snug text-navy/90">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveText}</ReactMarkdown>
+          </div>
+        </motion.div>
+      )}
+
       {/* Urgency card */}
       {triage ? (
         <motion.div
@@ -93,11 +124,13 @@ export function TriagePanel({ triage, vitals }: { triage: TriageData | null; vit
             </div>
 
             {triage.summary && (
-              <p className="mt-3 text-[0.9rem] leading-snug opacity-95">{triage.summary}</p>
+              <div className="md mt-3 text-[0.9rem] leading-snug opacity-95">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{triage.summary}</ReactMarkdown>
+              </div>
             )}
           </div>
         </motion.div>
-      ) : (
+      ) : streaming ? null : (
         <div className="flex items-center gap-3 rounded-3xl border border-navy-line bg-cream-soft/60 px-5 py-6 text-navy/45">
           <Heartbeat size={22} weight="duotone" />
           <span className="text-sm">Awaiting triage assessment…</span>

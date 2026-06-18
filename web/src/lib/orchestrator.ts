@@ -282,106 +282,29 @@ async function* runCascadeInner(
     finalManagementCaseBlock += `\n\nCRITICAL SAFETY WARNING: Patient is allergic to ${allergyInfo.allergy.toUpperCase()}. DO NOT prescribe or recommend any of the following medications: ${allergyInfo.warnings.join(", ")}. If these drugs would normally be indicated, you MUST specify a safe alternative class of drug and clearly document the reason for the substitution.`;
   }
 
-  // ── PHASE 1: Triage + Management in PARALLEL ──
-  yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "TriageAgent is working…" };
-  yield {
-    type: "status",
-    agent: "management",
-    agentName: "ManagementAgent",
-    message: "ManagementAgent searching PubMed + guidelines…",
-  };
-
+  // Kick off evidence gathering immediately so it's ready by the time the
+  // Management agent runs (after the clinician verifies triage). This keeps the
+  // expensive PubMed/Tavily lookups off the critical path without forcing
+  // Management to run before the human checkpoint.
   const evidencePromise = Promise.all([
     gatherEvidence(patientCase + " emergency management guidelines"),
     trustedMedicalSearch(patientCase + " management guideline"),
   ]).then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`);
 
-  // Triage and Management stream concurrently. We can't `yield*` two generators
-  // at once, so we merge their event streams into a single queue and drain it,
-  // forwarding tokens/steps from both as they interleave live.
-  const triageGen = runAgent("triage", caseBlock, "management", roomId);
-  const mgmtGen = evidencePromise.then((evidence) =>
-    runAgent("management", finalManagementCaseBlock + evidence, "investigation", roomId)
-  );
+  // ── PHASE 1: Triage ONLY — streams, then pauses for clinician verification
+  //    BEFORE the management plan is built. This is the correct clinical order:
+  //    the doctor confirms/overrides the priority first. ──
+  yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "TriageAgent is working…" };
+  countStep();
+  let triageStep: CascadeStep | null = yield* runAgent("triage", caseBlock, "management", roomId);
 
-  // Held in an object so TS doesn't narrow these to `never` — they're assigned
-  // inside the drive() callbacks below, which control-flow analysis can't see.
-  const phase1: { triage: CascadeStep | null; management: CascadeStep | null } = {
-    triage: null,
-    management: null,
-  };
+  if (!triageStep) return;
 
-  // Drive a generator to completion, pushing each event into `sink` and
-  // capturing its return value (the final step) or error.
-  async function drive(
-    genOrPromise: AsyncGenerator<CascadeEvent, CascadeStep> | Promise<AsyncGenerator<CascadeEvent, CascadeStep>>,
-    sink: (ev: CascadeEvent) => void,
-    onDone: (step: CascadeStep | null, err?: unknown) => void
-  ) {
-    try {
-      const gen = await genOrPromise;
-      let res = await gen.next();
-      while (!res.done) {
-        sink(res.value);
-        res = await gen.next();
-      }
-      onDone(res.value);
-    } catch (err) {
-      onDone(null, err);
-    }
-  }
-
-  const merged: CascadeEvent[] = [];
-  let mergeWaiter: (() => void) | null = null;
-  const push = (ev: CascadeEvent) => {
-    merged.push(ev);
-    mergeWaiter?.();
-    mergeWaiter = null;
-  };
-  let activeDrivers = 2;
-  const finishDriver = () => {
-    activeDrivers -= 1;
-    mergeWaiter?.();
-    mergeWaiter = null;
-  };
-
-  drive(triageGen, push, (step, err) => {
-    if (step) {
-      countStep();
-      phase1.triage = step;
-    } else {
-      push({ type: "error", agent: "triage", agentName: "TriageAgent", message: String(err) });
-    }
-    finishDriver();
-  });
-  drive(mgmtGen, push, (step, err) => {
-    if (step) {
-      countStep();
-      phase1.management = step;
-    } else {
-      push({ type: "error", agent: "management", agentName: "ManagementAgent", message: String(err) });
-    }
-    finishDriver();
-  });
-
-  // Forward merged events until both drivers finish and the buffer drains.
-  while (activeDrivers > 0 || merged.length > 0) {
-    if (merged.length > 0) {
-      yield merged.shift()!;
-      continue;
-    }
-    await new Promise<void>((r) => (mergeWaiter = r));
-  }
-
-  if (!phase1.triage && !phase1.management) return;
-  let triageStep = phase1.triage;
-  let managementStep = phase1.management;
-
-  // ── HUMAN-IN-THE-LOOP PAUSE POINT ──
+  // ── HUMAN-IN-THE-LOOP PAUSE POINT (right after triage) ──
   yield {
     type: "pause",
     runId,
-    message: "Triage and Initial Management Plan ready for clinician verification.",
+    message: "Triage complete — awaiting clinician verification before management planning.",
   };
 
   const resumePromise = new Promise<ResumeData>((resolve) => {
@@ -392,25 +315,35 @@ async function* runCascadeInner(
   pendingRuns.delete(runId);
 
   let triageContent = triageStep?.content || "";
-  let managementContent = managementStep?.content || "";
 
-  if (resumeData.approved) {
-    if (resumeData.atsOverride) {
-      const waitTimes = [0, 0, 10, 30, 60, 120];
-      triageContent = `TRIAGE: ATS ${resumeData.atsOverride} | Clinician Overridden | Max wait: ${waitTimes[resumeData.atsOverride]} minutes\n**SUMMARY:** [Clinician Overridden] Case prioritisation verified and adjusted by doctor.`;
-      if (triageStep) {
-        triageStep.content = triageContent;
-        yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
-      }
+  if (resumeData.approved && resumeData.atsOverride) {
+    const waitTimes = [0, 0, 10, 30, 60, 120];
+    triageContent = `TRIAGE: ATS ${resumeData.atsOverride} | Clinician Overridden | Max wait: ${waitTimes[resumeData.atsOverride]} minutes\n**SUMMARY:** [Clinician Overridden] Case prioritisation verified and adjusted by doctor.`;
+    if (triageStep) {
+      triageStep.content = triageContent;
+      yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
     }
   }
 
-  const transcript: string[] = [caseBlock];
-  if (triageContent) transcript.push(`TriageAgent OUTPUT:\n${triageContent}`);
-  if (managementContent) transcript.push(`ManagementAgent OUTPUT:\n${managementContent}`);
-  if (resumeData.approved && resumeData.note) {
-    transcript.push(`CLINICIAN INPUT:\n${resumeData.note}`);
-  }
+  // ── PHASE 2: Management plan (now informed by the verified triage + any
+  //    clinician note). Streams live. ──
+  const clinicianNote =
+    resumeData.approved && resumeData.note ? `\n\nCLINICIAN INPUT:\n${resumeData.note}` : "";
+  yield {
+    type: "status",
+    agent: "management",
+    agentName: "ManagementAgent",
+    message: "ManagementAgent building evidence-based plan…",
+  };
+  countStep();
+  const evidence = await evidencePromise;
+  let managementStep: CascadeStep | null = yield* runAgent(
+    "management",
+    `${finalManagementCaseBlock}\n\nVERIFIED TRIAGE:\n${triageContent}${clinicianNote}${evidence}`,
+    "investigation",
+    roomId
+  );
+  let managementContent = managementStep?.content || "";
 
   // Helper to compile transcript for sequential agents
   let investigationContent = "";
