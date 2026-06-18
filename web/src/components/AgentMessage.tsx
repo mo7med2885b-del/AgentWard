@@ -1,6 +1,7 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,7 +11,7 @@ import {
   ClipboardText,
   MagnifyingGlass,
   CheckCircle,
-  User,
+  CaretDown,
 } from "@phosphor-icons/react";
 import type { AgentId } from "@/lib/types";
 import { AGENT_UI } from "@/lib/agent-ui";
@@ -23,76 +24,69 @@ const ICONS = {
   observer: MagnifyingGlass,
 } as const;
 
-export function AgentMessage({
+/**
+ * Collapsible raw-output card. The dashboard surfaces parsed/structured data,
+ * but each agent's full markdown response stays available here for inspection
+ * (handy for demos and for clinicians who want the underlying reasoning).
+ */
+export function AgentRawCard({
   agent,
   content,
   provider,
   bandSynced,
+  defaultOpen = false,
 }: {
   agent: AgentId;
   content: string;
   provider?: string;
   bandSynced?: boolean;
+  defaultOpen?: boolean;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   const ui = AGENT_UI[agent];
   const Icon = ICONS[agent];
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 120, damping: 20 }}
-      className="grid grid-cols-[2.25rem_1fr] gap-3"
-    >
-      <div
-        className="mt-1 grid h-9 w-9 place-items-center rounded-xl border"
-        style={{ borderColor: ui.hex, color: ui.hex, background: "#f6f0e4" }}
+    <motion.div layout className="overflow-hidden rounded-2xl border border-navy-line bg-cream-soft/70">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
       >
-        <Icon size={18} weight="duotone" />
-      </div>
-
-      <div className="min-w-0">
-        <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-sm font-semibold tracking-tight" style={{ color: ui.hex }}>
-            {ui.label}
+        <span
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border"
+          style={{ borderColor: ui.hex, color: ui.hex, background: "#f6f0e4" }}
+        >
+          <Icon size={15} weight="duotone" />
+        </span>
+        <span className="flex-1 text-sm font-semibold tracking-tight" style={{ color: ui.hex }}>
+          {ui.label}
+        </span>
+        {provider && (
+          <span className="rounded-full border border-navy-line px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-navy/55">
+            {provider}
           </span>
-          {provider && (
-            <span className="rounded-full border border-navy-line px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-navy/55">
-              {provider}
-            </span>
-          )}
-          {bandSynced && (
-            <span className="flex items-center gap-1 font-mono text-[10px] text-navy/55">
-              <CheckCircle size={12} weight="fill" />
-              synced to Band
-            </span>
-          )}
-        </div>
+        )}
+        {bandSynced && <CheckCircle size={13} weight="fill" className="text-mgmt" />}
+        <motion.span animate={{ rotate: open ? 180 : 0 }} className="text-navy/45">
+          <CaretDown size={15} weight="bold" />
+        </motion.span>
+      </button>
 
-        <div className="md rounded-2xl rounded-tl-sm border border-navy-line bg-cream-soft px-4 py-3 text-[0.92rem] text-navy/90 shadow-[0_12px_30px_-18px_rgba(30,42,68,0.35)]">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-export function UserMessage({ content }: { content: string }) {
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 120, damping: 20 }}
-      className="grid grid-cols-[1fr_2.25rem] gap-3"
-    >
-      <div className="md min-w-0 rounded-2xl rounded-tr-sm border border-navy/15 bg-navy px-4 py-3 text-[0.92rem] text-cream">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-      </div>
-      <div className="mt-1 grid h-9 w-9 place-items-center rounded-xl border border-navy/20 bg-navy text-cream">
-        <User size={18} weight="duotone" />
-      </div>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="md border-t border-navy-line px-4 py-3 text-[0.88rem] text-navy/90">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

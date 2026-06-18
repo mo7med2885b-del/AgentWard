@@ -115,10 +115,42 @@ function StageIcon({
   );
 }
 
-export function PipelineRail({ states }: { states: Record<AgentId, StageState> }) {
+export function PipelineRail({
+  states,
+  layout = "vertical",
+}: {
+  states: Record<AgentId, StageState>;
+  layout?: "vertical" | "horizontal";
+}) {
   const sequential: AgentId[] = ["investigation", "documentation", "observer"];
   const triageLit = states.triage === "active" || states.triage === "done";
   const mgmtLit = states.management === "active" || states.management === "done";
+
+  // Horizontal strip used in the dashboard header: all five stages in a row
+  // with connectors, parallel pair grouped on the left.
+  if (layout === "horizontal") {
+    const order: AgentId[] = ["triage", "management", "investigation", "documentation", "observer"];
+    return (
+      <div className="flex items-center gap-1 overflow-x-auto pb-1">
+        {order.map((id, i) => (
+          <div key={id} className="flex items-center gap-1">
+            <div className="flex min-w-[5.5rem] flex-col items-center gap-1.5 rounded-2xl border border-navy-line bg-cream/40 px-2 py-2.5">
+              <ColNode id={id} state={states[id]} />
+            </div>
+            {i < order.length - 1 && (
+              <span
+                className="h-px w-4 shrink-0"
+                style={{
+                  background:
+                    states[id] === "done" ? AGENT_UI[id].hex : "#d8ccb4",
+                }}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">

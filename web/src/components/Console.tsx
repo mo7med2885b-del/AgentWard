@@ -1,22 +1,42 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { PaperPlaneRight, Sparkle, Stethoscope, Plus } from "@phosphor-icons/react";
-import type { AgentId, CascadeEvent, CascadeStep } from "@/lib/types";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
+import { PaperPlaneRight, Sparkle, Plus, ListChecks, FlowArrow } from "@phosphor-icons/react";
+import type {
+  ActionItem,
+  AgentId,
+  CascadeEvent,
+  CascadeStep,
+  Investigation,
+  TriageData,
+  Vital,
+} from "@/lib/types";
 import { PIPELINE, SAMPLE_CASE } from "@/lib/agent-ui";
-import { AgentMessage, UserMessage } from "./AgentMessage";
+import {
+  detectAllergyConflict,
+  parseActions,
+  parseInvestigations,
+  parseTriage,
+  parseVitals,
+} from "@/lib/parsers";
 import { PipelineRail, type StageState } from "./PipelineRail";
-
-type Bubble =
-  | { kind: "user"; content: string }
-  | { kind: "agent"; agent: AgentId; content: string; provider?: string; bandSynced?: boolean };
+import { TriagePanel } from "./dashboard/TriagePanel";
+import { CarePlanPanel } from "./dashboard/CarePlanPanel";
+import { EhrPanel } from "./dashboard/EhrPanel";
+import { HitlOverlay, type HitlDecision } from "./dashboard/HitlOverlay";
+import { SafetyAlert, CorrectionBanner } from "./dashboard/Alerts";
+import { AgentRawCard } from "./AgentMessage";
 
 const idleStates = (): Record<AgentId, StageState> =>
   PIPELINE.reduce((acc, id) => ({ ...acc, [id]: "idle" }), {} as Record<AgentId, StageState>);
 
+// Raw agent outputs accumulated during a run, keyed by agent.
+type Outputs = Partial<Record<AgentId, { content: string; bandSynced: boolean }>>;
+
 export function Console() {
-  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  const [outputs, setOutputs] = useState<Outputs>({});
+  const [actions, setActions] = useState<ActionItem[]>([]);
   const [states, setStates] = useState<Record<AgentId, StageState>>(idleStates());
   const [running, setRunning] = useState(false);
   const [statusLine, setStatusLine] = useState("");
@@ -24,189 +44,305 @@ export function Console() {
   const [input, setInput] = useState("");
   const [newRoom, setNewRoom] = useState(true);
   const [roomId, setRoomId] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [caseText, setCaseText] = useState("");
 
-  const scrollToEnd = useCallback(() => {
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    });
+  // HITL / safety / correction transient UI state.
+  const [paused, setPaused] = useState(false);
+  const [runId, setRunId] = useState("");
+  const [safety, setSafety] = useState("");
+  const [correcting, setCorrecting] = useState("");
+
+  const startedRef = useRef(false);
+
+  // ── Derived dashboard data (parsed from raw agent outputs) ──
+  const triage: TriageData | null = useMemo(
+    () => parseTriage(outputs.triage?.content ?? ""),
+    [outputs.triage]
+  );
+  const vitals: Vital[] = useMemo(() => parseVitals(caseText), [caseText]);
+  const investigations: Investigation[] = useMemo(
+    () => parseInvestigations(outputs.investigation?.content ?? ""),
+    [outputs.investigation]
+  );
+  const note = outputs.documentation?.content ?? "";
+
+  // Consume the SSE stream from a fetch Response body.
+  const consume = useCallback(async (res: Response) => {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        handleEvent(JSON.parse(line.slice(5).trim()) as CascadeEvent);
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleEvent = useCallback((ev: CascadeEvent) => {
+    if (ev.runId) setRunId(ev.runId);
+
+    if (ev.type === "status") {
+      if (ev.message) {
+        const m = ev.message.match(/New Band room ready:\s*([0-9a-f-]{8,})/i);
+        if (m) setRoomId(m[1]);
+      }
+      if (ev.agent) setStates((s) => ({ ...s, [ev.agent as AgentId]: "active" }));
+      setStatusLine(ev.message ?? "");
+    } else if (ev.type === "step" && ev.step) {
+      const step = ev.step as CascadeStep;
+      setStates((s) => ({ ...s, [step.agent]: "done" }));
+      setOutputs((o) => ({
+        ...o,
+        [step.agent]: { content: step.content, bandSynced: step.bandSynced },
+      }));
+      // Management output drives the actions checklist + allergy safety check.
+      if (step.agent === "management") {
+        setActions(parseActions(step.content));
+      }
+    } else if (ev.type === "pause") {
+      setPaused(true);
+      setStatusLine("Paused for clinical verification…");
+    } else if (ev.type === "correcting") {
+      setCorrecting(ev.message ?? "Observer flagged an issue — regenerating plan…");
+      if (ev.agent) setStates((s) => ({ ...s, [ev.agent as AgentId]: "active" }));
+    } else if (ev.type === "safety_alert") {
+      setSafety(ev.message ?? "Potential medication contraindication detected.");
+    } else if (ev.type === "error") {
+      setError(ev.message ?? "Unknown error");
+    } else if (ev.type === "done") {
+      setStatusLine("");
+      setCorrecting("");
+    }
   }, []);
 
   const run = useCallback(
-    async (caseText: string) => {
-      if (running || !caseText.trim()) return;
+    async (text: string) => {
+      if (running || !text.trim()) return;
       setRunning(true);
       setError("");
+      setSafety("");
+      setCorrecting("");
+      setPaused(false);
       setStates(idleStates());
-      setBubbles([{ kind: "user", content: caseText }]);
+      setOutputs({});
+      setActions([]);
       setRoomId("");
+      setRunId("");
+      setCaseText(text);
+      startedRef.current = true;
       setStatusLine("Connecting to the agent board…");
-      scrollToEnd();
 
       try {
         const res = await fetch("/api/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ case: caseText, newRoom }),
+          body: JSON.stringify({ case: text, newRoom }),
         });
-        if (!res.ok || !res.body) {
-          throw new Error(`Server error ${res.status}`);
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() ?? "";
-          for (const part of parts) {
-            const line = part.trim();
-            if (!line.startsWith("data:")) continue;
-            const ev = JSON.parse(line.slice(5).trim()) as CascadeEvent;
-            handleEvent(ev);
-          }
-        }
+        if (!res.ok || !res.body) throw new Error(`Server error ${res.status}`);
+        await consume(res);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setRunning(false);
         setStatusLine("");
-        scrollToEnd();
       }
     },
-    [running, scrollToEnd, newRoom]
+    [running, newRoom, consume]
   );
 
-  const handleEvent = useCallback(
-    (ev: CascadeEvent) => {
-      // Capture a freshly-created room id from its status message.
-      if (ev.type === "status" && ev.message) {
-        const m = ev.message.match(/New Band room ready:\s*([0-9a-f-]{8,})/i);
-        if (m) setRoomId(m[1]);
-      }
-      if (ev.type === "status" && ev.agent) {
-        setStates((s) => ({ ...s, [ev.agent as AgentId]: "active" }));
-        setStatusLine(ev.message ?? "");
-        scrollToEnd();
-      } else if (ev.type === "step" && ev.step) {
-        const step = ev.step as CascadeStep;
-        setStates((s) => ({ ...s, [step.agent]: "done" }));
-        setBubbles((b) => [
-          ...b,
-          {
-            kind: "agent",
-            agent: step.agent,
-            content: step.content,
-            provider: step.provider,
-            bandSynced: step.bandSynced,
+  // Resolve the HITL checkpoint: resume the pipeline stream.
+  const resolveHitl = useCallback(
+    async (d: HitlDecision) => {
+      setPaused(false);
+      setStatusLine("Resuming pipeline…");
+
+      // Apply an ATS override locally for instant dashboard feedback.
+      if (d.atsOverride && outputs.triage) {
+        setOutputs((o) => ({
+          ...o,
+          triage: {
+            ...o.triage!,
+            content: o.triage!.content.replace(/ATS\s*\[?\s*[1-5]/i, `ATS ${d.atsOverride}`),
           },
-        ]);
-        scrollToEnd();
-      } else if (ev.type === "error") {
-        setError(ev.message ?? "Unknown error");
-      } else if (ev.type === "done") {
+        }));
+      }
+
+      try {
+        const res = await fetch("/api/run/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            runId,
+            approved: d.approved,
+            atsOverride: d.atsOverride,
+            note: d.note,
+          }),
+        });
+        if (res.ok && res.body) await consume(res);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRunning(false);
         setStatusLine("");
       }
     },
-    [scrollToEnd]
+    [runId, outputs.triage, consume]
   );
+
+  const toggleAction = useCallback((id: string) => {
+    setActions((a) => a.map((x) => (x.id === id ? { ...x, completed: !x.completed } : x)));
+  }, []);
+
+  const syncToRoom = useCallback(() => {
+    setStatusLine("Note re-synced to Band room.");
+    setTimeout(() => setStatusLine(""), 1800);
+  }, []);
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     run(input);
   };
 
-  return (
-    <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
-      {/* Pipeline rail */}
-      <aside className="lg:sticky lg:top-6 lg:self-start">
-        <div className="rounded-3xl border border-navy-line bg-cream-soft/70 p-5">
-          <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-navy/55">
-            <Stethoscope size={15} weight="bold" />
-            Care pipeline
-          </div>
-          <PipelineRail states={states} />
-        </div>
+  const idle = !startedRef.current;
 
-        {/* Fresh-room toggle */}
-        <button
-          type="button"
-          onClick={() => setNewRoom((v) => !v)}
-          disabled={running}
-          className="mt-3 flex w-full items-center justify-between gap-2 rounded-2xl border border-navy/20 bg-cream-soft px-4 py-2.5 text-sm font-medium text-navy transition active:translate-y-[1px] disabled:opacity-50"
-          aria-pressed={newRoom}
-        >
-          <span className="flex items-center gap-2">
-            <Plus size={15} weight="bold" />
-            New Band room each run
-          </span>
-          <span
-            className="relative h-5 w-9 rounded-full transition-colors"
-            style={{ background: newRoom ? "#1E2A44" : "#d8ccb4" }}
+  return (
+    <div className="space-y-5">
+      {/* HITL overlay */}
+      <AnimatePresence>
+        {paused && <HitlOverlay currentAts={triage?.atsLevel ?? null} onResolve={resolveHitl} />}
+      </AnimatePresence>
+
+      {/* Case composer + controls */}
+      <form onSubmit={onSubmit}>
+        <div className="flex flex-col gap-2 rounded-3xl border border-navy/20 bg-cream-soft p-3 md:flex-row md:items-end">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                run(input);
+              }
+            }}
+            rows={2}
+            placeholder="Describe the patient: age, complaint, vitals, allergies…"
+            disabled={running}
+            className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-[0.95rem] text-navy placeholder:text-navy/35 focus:outline-none disabled:opacity-60"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setInput(SAMPLE_CASE);
+                run(SAMPLE_CASE);
+              }}
+              disabled={running}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-navy/20 bg-cream-soft px-4 py-2.5 text-sm font-medium text-navy transition active:translate-y-[1px] disabled:opacity-50"
+            >
+              <Sparkle size={15} weight="fill" />
+              Sample case
+            </button>
+            <button
+              type="submit"
+              disabled={running || !input.trim()}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-navy px-5 py-2.5 text-sm font-medium text-cream transition active:scale-[0.98] disabled:opacity-40"
+            >
+              <PaperPlaneRight size={16} weight="fill" />
+              Run board
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 flex items-center gap-3 px-1">
+          <button
+            type="button"
+            onClick={() => setNewRoom((v) => !v)}
+            disabled={running}
+            className="flex items-center gap-2 text-xs font-medium text-navy/60 disabled:opacity-50"
+            aria-pressed={newRoom}
           >
             <span
-              className="absolute top-0.5 h-4 w-4 rounded-full bg-cream-soft transition-all"
-              style={{ left: newRoom ? "1.25rem" : "0.125rem" }}
-            />
-          </span>
-        </button>
+              className="relative h-4 w-7 rounded-full transition-colors"
+              style={{ background: newRoom ? "#1E2A44" : "#d8ccb4" }}
+            >
+              <span
+                className="absolute top-0.5 h-3 w-3 rounded-full bg-cream-soft transition-all"
+                style={{ left: newRoom ? "0.875rem" : "0.125rem" }}
+              />
+            </span>
+            <Plus size={13} weight="bold" />
+            New Band room each run
+          </button>
+          {roomId && (
+            <span className="truncate font-mono text-[10px] text-navy/45">room · {roomId}</span>
+          )}
+        </div>
+      </form>
 
-        {roomId && (
-          <div className="mt-2 truncate rounded-xl border border-navy-line bg-cream-soft/60 px-3 py-2 font-mono text-[10px] text-navy/60">
-            room · {roomId}
+      {/* Live alerts */}
+      <AnimatePresence>
+        {safety && <SafetyAlert key="safety" message={safety} />}
+        {correcting && <CorrectionBanner key="correcting" message={correcting} />}
+      </AnimatePresence>
+
+      {idle ? (
+        <EmptyState onSample={() => run(SAMPLE_CASE)} disabled={running} />
+      ) : (
+        <>
+          {/* Pipeline status strip */}
+          <div className="rounded-3xl border border-navy-line bg-cream-soft/70 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-navy/55">
+                <FlowArrow size={15} weight="bold" />
+                Care pipeline
+              </div>
+              {running && statusLine && (
+                <span className="animate-breathe font-mono text-[11px] text-navy/55">
+                  {statusLine}
+                </span>
+              )}
+            </div>
+            <PipelineRail states={states} layout="horizontal" />
           </div>
-        )}
 
-        <button
-          type="button"
-          onClick={() => {
-            setInput(SAMPLE_CASE);
-            run(SAMPLE_CASE);
-          }}
-          disabled={running}
-          className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-navy/20 bg-cream-soft px-4 py-2.5 text-sm font-medium text-navy transition active:translate-y-[1px] disabled:opacity-50"
-        >
-          <Sparkle size={15} weight="fill" />
-          Run sample case
-        </button>
-      </aside>
+          {/* Three-column clinical command grid */}
+          <div className="grid gap-5 lg:grid-cols-[320px_1fr_360px]">
+            <TriagePanel triage={triage} vitals={vitals} />
+            <CarePlanPanel
+              actions={actions}
+              investigations={investigations}
+              onToggle={toggleAction}
+            />
+            <EhrPanel note={note} bandSynced={!!outputs.documentation?.bandSynced} onSync={syncToRoom} />
+          </div>
 
-      {/* Conversation */}
-      <section className="flex min-h-[60dvh] flex-col">
-        <div
-          ref={scrollRef}
-          className="flex-1 space-y-5 overflow-y-auto pr-1"
-          style={{ maxHeight: "calc(100dvh - 16rem)" }}
-        >
-          {bubbles.length === 0 && <EmptyState />}
-
-          <AnimatePresence initial={false}>
-            {bubbles.map((b, i) =>
-              b.kind === "user" ? (
-                <UserMessage key={i} content={b.content} />
-              ) : (
-                <AgentMessage
-                  key={i}
-                  agent={b.agent}
-                  content={b.content}
-                  provider={b.provider}
-                  bandSynced={b.bandSynced}
-                />
-              )
-            )}
-          </AnimatePresence>
-
-          {running && statusLine && (
-            <div className="flex items-center gap-2 pl-12 font-mono text-xs text-navy/55">
-              <span className="inline-flex gap-1">
-                <Dot /> <Dot delay={0.15} /> <Dot delay={0.3} />
-              </span>
-              {statusLine}
+          {/* Raw agent transcript — collapsible audit trail */}
+          {PIPELINE.some((id) => outputs[id]) && (
+            <div className="rounded-3xl border border-navy-line bg-cream-soft/40 p-4">
+              <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-navy/55">
+                <FlowArrow size={15} weight="bold" />
+                Agent transcript
+              </div>
+              <div className="space-y-2">
+                {PIPELINE.map((id) =>
+                  outputs[id] ? (
+                    <AgentRawCard
+                      key={id}
+                      agent={id}
+                      content={outputs[id]!.content}
+                      bandSynced={outputs[id]!.bandSynced}
+                      defaultOpen={id === "observer"}
+                    />
+                  ) : null
+                )}
+              </div>
             </div>
           )}
 
@@ -215,63 +351,35 @@ export function Console() {
               {error}
             </div>
           )}
-        </div>
-
-        {/* Composer */}
-        <form onSubmit={onSubmit} className="mt-5">
-          <div className="flex items-end gap-2 rounded-3xl border border-navy/20 bg-cream-soft p-2 focus-within:border-navy/40">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  run(input);
-                }
-              }}
-              rows={2}
-              placeholder="Describe the patient: age, complaint, vitals…"
-              disabled={running}
-              className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-[0.95rem] text-navy placeholder:text-navy/35 focus:outline-none disabled:opacity-60"
-            />
-            <button
-              type="submit"
-              disabled={running || !input.trim()}
-              className="grid h-11 w-11 place-items-center rounded-2xl bg-navy text-cream transition active:scale-[0.96] disabled:opacity-40"
-              aria-label="Run cascade"
-            >
-              <PaperPlaneRight size={18} weight="fill" />
-            </button>
-          </div>
-        </form>
-      </section>
+        </>
+      )}
     </div>
   );
 }
 
-function Dot({ delay = 0 }: { delay?: number }) {
+function EmptyState({ onSample, disabled }: { onSample: () => void; disabled: boolean }) {
   return (
-    <motion.span
-      className="inline-block h-1.5 w-1.5 rounded-full bg-navy/40"
-      animate={{ opacity: [0.3, 1, 0.3] }}
-      transition={{ repeat: Infinity, duration: 1, delay }}
-    />
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="flex h-full min-h-[40dvh] flex-col items-center justify-center text-center">
+    <div className="flex min-h-[42dvh] flex-col items-center justify-center rounded-3xl border border-dashed border-navy-line bg-cream-soft/40 px-6 text-center">
       <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border border-navy/15 bg-cream-soft text-navy">
-        <Stethoscope size={26} weight="duotone" />
+        <ListChecks size={26} weight="duotone" />
       </div>
       <h2 className="text-lg font-semibold tracking-tight text-navy">
-        Present a case to the board
+        Emergency Clinical Command Center
       </h2>
-      <p className="mt-1 max-w-sm text-sm text-navy/55">
-        Five specialist agents will triage, plan, investigate, document, and audit it
-        together, coordinating each handoff over Band.
+      <p className="mt-1 max-w-md text-sm text-navy/55">
+        Present a patient and five specialist agents will triage, plan management,
+        prioritise investigations, draft the EHR note, and audit each other — coordinated
+        live over Band.
       </p>
+      <button
+        type="button"
+        onClick={onSample}
+        disabled={disabled}
+        className="mt-5 flex items-center gap-2 rounded-2xl bg-navy px-5 py-3 text-sm font-semibold text-cream transition active:scale-[0.98] disabled:opacity-50"
+      >
+        <Sparkle size={16} weight="fill" />
+        Run sample case
+      </button>
     </div>
   );
 }

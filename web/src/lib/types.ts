@@ -57,3 +57,10 @@ export interface Investigation {
   test: string;
   rationale: string;
 }
+
+// Parsed from the raw patient case
+export interface Vital {
+  label: string;
+  value: string;
+  abnormal?: boolean;
+}

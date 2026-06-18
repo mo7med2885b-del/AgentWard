@@ -2,16 +2,19 @@ import { Console } from "@/components/Console";
 
 export default function Home() {
   return (
-    <main className="mx-auto min-h-[100dvh] max-w-[1180px] px-5 py-8 md:px-8">
+    <main className="mx-auto min-h-[100dvh] max-w-[1480px] px-5 py-8 md:px-8">
       {/* Header — asymmetric, left-aligned brand with a four-point star mark. */}
-      <header className="mb-8 flex items-start justify-between gap-4">
+      <header className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <div className="mb-2 flex items-center gap-2.5">
+          <div className="mb-1.5 flex items-center gap-2.5">
             <StarMark />
             <span className="font-mono text-xs uppercase tracking-[0.2em] text-navy/55">
               AgentWard
             </span>
           </div>
+          <h1 className="text-xl font-semibold tracking-tight text-navy">
+            Emergency Clinical Command
+          </h1>
         </div>
 
         <div className="hidden shrink-0 text-right md:block">
