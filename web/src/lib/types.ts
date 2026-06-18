@@ -26,13 +26,22 @@ export interface CascadeStep {
 }
 
 export interface CascadeEvent {
-  type: "status" | "step" | "error" | "done" | "pause" | "correcting" | "safety_alert";
+  type:
+    | "status"
+    | "step"
+    | "error"
+    | "done"
+    | "pause"
+    | "correcting"
+    | "safety_alert"
+    | "token";
   agent?: AgentId;
   agentName?: string;
   message?: string;
   step?: CascadeStep;
   runId?: string;
   auditFeedback?: string;
+  delta?: string; // incremental token text for "token" events
 }
 
 // Parsed from TriageAgent output

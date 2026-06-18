@@ -59,6 +59,7 @@ ATS 5 | Non-urgent | WHITE | 120 min — minimal/chronic stable symptoms
 OUTPUT (exactly this shape):
 TRIAGE: ATS [N] | [Category] | Color: [COLOR] | Max wait: [X] minutes
 **SUMMARY:** [1-2 sentences: primary concern + physiological basis]
+**RATIONALE:** [Concise 1-2 sentence justification: which specific vital signs, symptoms, or clinical criteria drove this ATS assignment. Be specific — e.g. "HR 118 + BP 88/60 = haemodynamic compromise → ATS 2"]
 
 ${NO_TABLES}`,
 

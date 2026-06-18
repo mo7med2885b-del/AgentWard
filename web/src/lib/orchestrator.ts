@@ -9,7 +9,7 @@
 // Steps are streamed to the UI as they complete.
 
 import { AGENTS, SYSTEM_PROMPTS } from "./agents";
-import { completeForAgent } from "./llm";
+import { streamForAgent } from "./llm";
 import { gatherEvidence } from "./pubmed";
 import { trustedMedicalSearch } from "./tavily";
 import { postToBand, createRoomWithAgents } from "./band";
@@ -132,23 +132,57 @@ function maxTokensFor(agent: AgentId): number {
   return 4000;
 }
 
-// Run one agent: call its model, post result to Band, return the step.
-async function runAgent(
+// Run one agent as a generator: streams `token` events live as the model
+// produces text, posts the final result to Band, and yields a final `step`
+// event. The terminal `step` event carries the completed CascadeStep so callers
+// can capture the content for downstream agents.
+async function* runAgent(
   agent: AgentId,
   userMsg: string,
   mentionNext: AgentId | null,
   roomId?: string,
   temperatureOverride?: number
-): Promise<CascadeStep> {
+): AsyncGenerator<CascadeEvent, CascadeStep> {
   const meta = AGENTS[agent];
   let systemPrompt = SYSTEM_PROMPTS[agent];
   if (agent === "documentation") systemPrompt = systemPrompt.replace("{{NOW}}", nowStr());
 
   const startedAt = new Date().toISOString();
-  const result = await completeForAgent(agent, systemPrompt, userMsg, {
+
+  // Collect token deltas into a queue that the generator drains between awaits,
+  // so tokens reach the client as they arrive rather than all at the end.
+  const queue: string[] = [];
+  let resolveWaiter: (() => void) | null = null;
+  const onToken = (delta: string) => {
+    queue.push(delta);
+    resolveWaiter?.();
+    resolveWaiter = null;
+  };
+
+  const resultPromise = streamForAgent(agent, systemPrompt, userMsg, onToken, {
     temperature: temperatureOverride ?? (agent === "triage" ? 0.1 : 0.2),
     maxTokens: maxTokensFor(agent),
   });
+
+  // Drain tokens until the model call settles.
+  let settled = false;
+  resultPromise.finally(() => {
+    settled = true;
+    resolveWaiter?.();
+    resolveWaiter = null;
+  });
+
+  while (!settled || queue.length > 0) {
+    if (queue.length > 0) {
+      const delta = queue.shift()!;
+      yield { type: "token", agent, agentName: meta.name, delta };
+      continue;
+    }
+    if (settled) break;
+    await new Promise<void>((r) => (resolveWaiter = r));
+  }
+
+  const result = await resultPromise; // re-throws if the stream failed
   const finishedAt = new Date().toISOString();
 
   const next = mentionNext ? AGENTS[mentionNext] : null;
@@ -159,7 +193,7 @@ async function runAgent(
     roomId
   );
 
-  return {
+  const step: CascadeStep = {
     agent,
     agentName: meta.name,
     content: result.content,
@@ -168,6 +202,8 @@ async function runAgent(
     bandSynced,
     provider: result.provider,
   };
+  yield { type: "step", agent, agentName: meta.name, step };
+  return step;
 }
 
 export async function* runCascade(
@@ -245,30 +281,77 @@ async function* runCascadeInner(
     trustedMedicalSearch(patientCase + " management guideline"),
   ]).then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`);
 
-  const triagePromise = runAgent("triage", caseBlock, "investigation", roomId);
-  const managementPromise = evidencePromise.then((evidence) =>
+  // Triage and Management stream concurrently. We can't `yield*` two generators
+  // at once, so we merge their event streams into a single queue and drain it,
+  // forwarding tokens/steps from both as they interleave live.
+  const triageGen = runAgent("triage", caseBlock, "management", roomId);
+  const mgmtGen = evidencePromise.then((evidence) =>
     runAgent("management", finalManagementCaseBlock + evidence, "investigation", roomId)
   );
-
-  const results = await Promise.allSettled([triagePromise, managementPromise]);
 
   let triageStep: CascadeStep | null = null;
   let managementStep: CascadeStep | null = null;
 
-  const [triageRes, mgmtRes] = results;
-  if (triageRes.status === "fulfilled") {
-    countStep();
-    triageStep = triageRes.value;
-    yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
-  } else {
-    yield { type: "error", agent: "triage", agentName: "TriageAgent", message: String(triageRes.reason) };
+  // Drive a generator to completion, pushing each event into `sink` and
+  // capturing its return value (the final step) or error.
+  async function drive(
+    genOrPromise: AsyncGenerator<CascadeEvent, CascadeStep> | Promise<AsyncGenerator<CascadeEvent, CascadeStep>>,
+    sink: (ev: CascadeEvent) => void,
+    onDone: (step: CascadeStep | null, err?: unknown) => void
+  ) {
+    try {
+      const gen = await genOrPromise;
+      let res = await gen.next();
+      while (!res.done) {
+        sink(res.value);
+        res = await gen.next();
+      }
+      onDone(res.value);
+    } catch (err) {
+      onDone(null, err);
+    }
   }
-  if (mgmtRes.status === "fulfilled") {
-    countStep();
-    managementStep = mgmtRes.value;
-    yield { type: "step", agent: "management", agentName: "ManagementAgent", step: managementStep };
-  } else {
-    yield { type: "error", agent: "management", agentName: "ManagementAgent", message: String(mgmtRes.reason) };
+
+  const merged: CascadeEvent[] = [];
+  let mergeWaiter: (() => void) | null = null;
+  const push = (ev: CascadeEvent) => {
+    merged.push(ev);
+    mergeWaiter?.();
+    mergeWaiter = null;
+  };
+  let activeDrivers = 2;
+  const finishDriver = () => {
+    activeDrivers -= 1;
+    mergeWaiter?.();
+    mergeWaiter = null;
+  };
+
+  drive(triageGen, push, (step, err) => {
+    if (step) {
+      countStep();
+      triageStep = step;
+    } else {
+      push({ type: "error", agent: "triage", agentName: "TriageAgent", message: String(err) });
+    }
+    finishDriver();
+  });
+  drive(mgmtGen, push, (step, err) => {
+    if (step) {
+      countStep();
+      managementStep = step;
+    } else {
+      push({ type: "error", agent: "management", agentName: "ManagementAgent", message: String(err) });
+    }
+    finishDriver();
+  });
+
+  // Forward merged events until both drivers finish and the buffer drains.
+  while (activeDrivers > 0 || merged.length > 0) {
+    if (merged.length > 0) {
+      yield merged.shift()!;
+      continue;
+    }
+    await new Promise<void>((r) => (mergeWaiter = r));
   }
 
   if (!triageStep && !managementStep) return;
@@ -330,15 +413,13 @@ async function* runCascadeInner(
   // ── PHASE 2: Initial Sequential Runs ──
   yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "InvestigationAgent is working…" };
   countStep();
-  let investigationStep = await runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
+  let investigationStep = yield* runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
   investigationContent = investigationStep.content;
-  yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
 
   yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "DocumentationAgent is working…" };
   countStep();
-  let documentationStep = await runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
+  let documentationStep = yield* runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
   documentationContent = documentationStep.content;
-  yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
 
   // ── PHASE 3: Audit + Self-Correction Loop ──
   const retriedAgents = new Set<AgentId>();
@@ -347,9 +428,8 @@ async function* runCascadeInner(
   for (let attempt = 1; attempt <= 2; attempt++) {
     yield { type: "status", agent: "observer", agentName: "ObserverAgent", message: `ObserverAgent auditing (Attempt ${attempt})…` };
     countStep();
-    observerStep = await runAgent("observer", compileTranscriptFor("observer"), null, roomId);
+    observerStep = yield* runAgent("observer", compileTranscriptFor("observer"), null, roomId);
     observerContent = observerStep.content;
-    yield { type: "step", agent: "observer", agentName: "ObserverAgent", step: observerStep };
 
     // Find lines matching "[!] Agent" indicating a failure
     const failureMatches = [...observerContent.matchAll(/\[!\]\s*(Triage|Management|Investigation|Documentation)\s*—\s*(.*)/gi)];

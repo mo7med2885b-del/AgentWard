@@ -159,6 +159,9 @@ export function Console() {
   );
 
   // Resolve the HITL checkpoint: resume the pipeline stream.
+  // The original /api/run SSE connection is still alive — the run() function's
+  // consume() call will continue reading remaining events once the server-side
+  // promise is resolved. We just need to fire the resume call and let it go.
   const resolveHitl = useCallback(
     async (d: HitlDecision) => {
       setPaused(false);
@@ -176,7 +179,7 @@ export function Console() {
       }
 
       try {
-        const res = await fetch("/api/run/resume", {
+        await fetch("/api/run/resume", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -186,15 +189,15 @@ export function Console() {
             note: d.note,
           }),
         });
-        if (res.ok && res.body) await consume(res);
+        // Don't consume the response — it's just JSON { success: true }.
+        // Don't set running=false — the original SSE stream from /api/run is
+        // still alive and the run() function's consume() will pick up the
+        // remaining agent events as the generator continues.
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setRunning(false);
-        setStatusLine("");
       }
     },
-    [runId, outputs.triage, consume]
+    [runId, outputs.triage]
   );
 
   const toggleAction = useCallback((id: string) => {
