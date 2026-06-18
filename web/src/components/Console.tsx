@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { PaperPlaneRight, Sparkle, Plus, ListChecks, FlowArrow } from "@phosphor-icons/react";
 import type {
   ActionItem,
@@ -12,7 +12,7 @@ import type {
   TriageData,
   Vital,
 } from "@/lib/types";
-import { PIPELINE, SAMPLE_CASE } from "@/lib/agent-ui";
+import { AGENT_UI, PIPELINE, SAMPLE_CASE } from "@/lib/agent-ui";
 import {
   detectAllergyConflict,
   parseActions,
@@ -51,6 +51,9 @@ export function Console() {
   const [runId, setRunId] = useState("");
   const [safety, setSafety] = useState("");
   const [correcting, setCorrecting] = useState("");
+
+  // Live token preview per agent (accumulated deltas, cleared when step lands).
+  const [streaming, setStreaming] = useState<Partial<Record<AgentId, string>>>({});
 
   const startedRef = useRef(false);
 
@@ -96,9 +99,16 @@ export function Console() {
       }
       if (ev.agent) setStates((s) => ({ ...s, [ev.agent as AgentId]: "active" }));
       setStatusLine(ev.message ?? "");
+    } else if (ev.type === "token" && ev.agent && ev.delta) {
+      const agent = ev.agent;
+      const delta = ev.delta;
+      setStates((s) => (s[agent] === "done" ? s : { ...s, [agent]: "active" }));
+      setStreaming((st) => ({ ...st, [agent]: (st[agent] ?? "") + delta }));
     } else if (ev.type === "step" && ev.step) {
       const step = ev.step as CascadeStep;
       setStates((s) => ({ ...s, [step.agent]: "done" }));
+      // Final canonical content replaces the live preview.
+      setStreaming((st) => ({ ...st, [step.agent]: undefined }));
       setOutputs((o) => ({
         ...o,
         [step.agent]: { content: step.content, bandSynced: step.bandSynced },
@@ -133,6 +143,7 @@ export function Console() {
       setPaused(false);
       setStates(idleStates());
       setOutputs({});
+      setStreaming({});
       setActions([]);
       setRoomId("");
       setRunId("");
@@ -220,7 +231,14 @@ export function Console() {
     <div className="space-y-5">
       {/* HITL overlay */}
       <AnimatePresence>
-        {paused && <HitlOverlay currentAts={triage?.atsLevel ?? null} onResolve={resolveHitl} />}
+        {paused && (
+          <HitlOverlay
+            currentAts={triage?.atsLevel ?? null}
+            rationale={triage?.summary ?? ""}
+            category={triage?.category ?? ""}
+            onResolve={resolveHitl}
+          />
+        )}
       </AnimatePresence>
 
       {/* Case composer + controls */}
@@ -315,6 +333,13 @@ export function Console() {
             <PipelineRail states={states} layout="horizontal" />
           </div>
 
+          {/* Live token stream — shows agents typing in real time */}
+          <AnimatePresence>
+            {PIPELINE.filter((id) => streaming[id]).map((id) => (
+              <LiveStream key={id} agent={id} text={streaming[id]!} />
+            ))}
+          </AnimatePresence>
+
           {/* Three-column clinical command grid */}
           <div className="grid gap-5 lg:grid-cols-[320px_1fr_360px]">
             <TriagePanel triage={triage} vitals={vitals} />
@@ -357,6 +382,32 @@ export function Console() {
         </>
       )}
     </div>
+  );
+}
+
+// Live "typing" preview of an agent's tokens as they stream in. Shows a tail
+// of the text so long outputs stay readable without ballooning the layout.
+function LiveStream({ agent, text }: { agent: AgentId; text: string }) {
+  const ui = AGENT_UI[agent];
+  const tail = text.length > 600 ? "…" + text.slice(-600) : text;
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      className="overflow-hidden rounded-2xl border border-navy-line bg-cream-soft/60"
+    >
+      <div className="flex items-center gap-2 px-4 pt-3">
+        <span className="h-2 w-2 animate-pulse rounded-full" style={{ background: ui.hex }} />
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-widest" style={{ color: ui.hex }}>
+          {ui.label} · streaming
+        </span>
+      </div>
+      <pre className="max-h-40 overflow-hidden whitespace-pre-wrap px-4 pb-3 pt-1.5 font-mono text-[0.78rem] leading-relaxed text-navy/75">
+        {tail}
+        <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-navy/50 align-middle" />
+      </pre>
+    </motion.div>
   );
 }
 

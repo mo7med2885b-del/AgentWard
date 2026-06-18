@@ -289,8 +289,12 @@ async function* runCascadeInner(
     runAgent("management", finalManagementCaseBlock + evidence, "investigation", roomId)
   );
 
-  let triageStep: CascadeStep | null = null;
-  let managementStep: CascadeStep | null = null;
+  // Held in an object so TS doesn't narrow these to `never` — they're assigned
+  // inside the drive() callbacks below, which control-flow analysis can't see.
+  const phase1: { triage: CascadeStep | null; management: CascadeStep | null } = {
+    triage: null,
+    management: null,
+  };
 
   // Drive a generator to completion, pushing each event into `sink` and
   // capturing its return value (the final step) or error.
@@ -329,7 +333,7 @@ async function* runCascadeInner(
   drive(triageGen, push, (step, err) => {
     if (step) {
       countStep();
-      triageStep = step;
+      phase1.triage = step;
     } else {
       push({ type: "error", agent: "triage", agentName: "TriageAgent", message: String(err) });
     }
@@ -338,7 +342,7 @@ async function* runCascadeInner(
   drive(mgmtGen, push, (step, err) => {
     if (step) {
       countStep();
-      managementStep = step;
+      phase1.management = step;
     } else {
       push({ type: "error", agent: "management", agentName: "ManagementAgent", message: String(err) });
     }
@@ -354,7 +358,9 @@ async function* runCascadeInner(
     await new Promise<void>((r) => (mergeWaiter = r));
   }
 
-  if (!triageStep && !managementStep) return;
+  if (!phase1.triage && !phase1.management) return;
+  let triageStep = phase1.triage;
+  let managementStep = phase1.management;
 
   // ── HUMAN-IN-THE-LOOP PAUSE POINT ──
   yield {
@@ -469,39 +475,33 @@ async function* runCascadeInner(
 
     if (agentToRetry === "triage") {
       yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "Retrying TriageAgent with feedback…" };
-      triageStep = await runAgent("triage", caseBlock + correctionCritique, "investigation", roomId, 0.45);
+      triageStep = yield* runAgent("triage", caseBlock + correctionCritique, "investigation", roomId, 0.45);
       triageContent = triageStep.content;
-      yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
     } else if (agentToRetry === "management") {
       yield { type: "status", agent: "management", agentName: "ManagementAgent", message: "Retrying ManagementAgent with feedback…" };
-      managementStep = await runAgent("management", finalManagementCaseBlock + (await evidencePromise) + correctionCritique, "investigation", roomId, 0.45);
+      managementStep = yield* runAgent("management", finalManagementCaseBlock + (await evidencePromise) + correctionCritique, "investigation", roomId, 0.45);
       managementContent = managementStep.content;
-      yield { type: "step", agent: "management", agentName: "ManagementAgent", step: managementStep };
     } else if (agentToRetry === "investigation") {
       yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "Retrying InvestigationAgent with feedback…" };
-      investigationStep = await runAgent("investigation", compileTranscriptFor("investigation") + correctionCritique, "documentation", roomId, 0.45);
+      investigationStep = yield* runAgent("investigation", compileTranscriptFor("investigation") + correctionCritique, "documentation", roomId, 0.45);
       investigationContent = investigationStep.content;
-      yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
     } else if (agentToRetry === "documentation") {
       yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "Retrying DocumentationAgent with feedback…" };
-      documentationStep = await runAgent("documentation", compileTranscriptFor("documentation") + correctionCritique, "observer", roomId, 0.45);
+      documentationStep = yield* runAgent("documentation", compileTranscriptFor("documentation") + correctionCritique, "observer", roomId, 0.45);
       documentationContent = documentationStep.content;
-      yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
     }
 
     // Re-run downstream dependents
     if (agentToRetry === "triage" || agentToRetry === "management") {
       yield { type: "status", agent: "investigation", agentName: "InvestigationAgent", message: "Re-running InvestigationAgent downstream…" };
-      investigationStep = await runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
+      investigationStep = yield* runAgent("investigation", compileTranscriptFor("investigation"), "documentation", roomId);
       investigationContent = investigationStep.content;
-      yield { type: "step", agent: "investigation", agentName: "InvestigationAgent", step: investigationStep };
     }
 
     if (agentToRetry === "triage" || agentToRetry === "management" || agentToRetry === "investigation") {
       yield { type: "status", agent: "documentation", agentName: "DocumentationAgent", message: "Re-running DocumentationAgent downstream…" };
-      documentationStep = await runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
+      documentationStep = yield* runAgent("documentation", compileTranscriptFor("documentation"), "observer", roomId);
       documentationContent = documentationStep.content;
-      yield { type: "step", agent: "documentation", agentName: "DocumentationAgent", step: documentationStep };
     }
   }
 

@@ -42,13 +42,15 @@ interface ModelRoute {
 const FALLBACK: ModelRoute = { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" };
 
 // Per-agent routing, tiered by role/benchmark:
-//   triage         -> lightning-fast capable model (DeepSeek-V4-Flash)
+//   triage         -> OpenRouter (Claude Sonnet 4.6) — MUST stay off Featherless
+//                     so Triage + Management run in PARALLEL without blowing
+//                     Featherless's 4-unit concurrency cap (429s otherwise).
 //   management     -> high-benchmark fast model (DeepSeek-V4-Flash)
 //   investigation  -> light/fast capable model (Mistral-Small-24B)
 //   documentation  -> reliable, clean-formatting model (Qwen2.5-32B)
 //   observer/audit -> fast validation model (Mistral-Small-24B)
 export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
-  triage: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Flash" },
+  triage: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
   management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Flash" },
   investigation: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
   documentation: { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" },

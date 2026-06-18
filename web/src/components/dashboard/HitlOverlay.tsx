@@ -13,9 +13,13 @@ export interface HitlDecision {
 /** Pauses the pipeline after triage, requiring clinician verification. */
 export function HitlOverlay({
   currentAts,
+  rationale,
+  category,
   onResolve,
 }: {
   currentAts: number | null;
+  rationale?: string;
+  category?: string;
   onResolve: (d: HitlDecision) => void;
 }) {
   const [override, setOverride] = useState<number | "">("");
