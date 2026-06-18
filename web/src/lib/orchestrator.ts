@@ -44,21 +44,72 @@ export const pendingRuns = new Map<string, PendingRun>();
 // ── ALLERGY SAFETY CHECKER ─────────────────────────────────────────────────
 function checkAllergies(patientCase: string): { allergy: string; warnings: string[] } | null {
   const lowercase = patientCase.toLowerCase();
-  const allergiesMap: Record<string, string[]> = {
-    penicillin: ["Penicillin", "Amoxicillin", "Ampicillin", "Piperacillin", "Tazobactam"],
-    aspirin: ["Aspirin", "ASA", "Acetylsalicylic acid"],
-    sulfa: ["Bactrim", "Sulfamethoxazole", "Septra"],
-    morphine: ["Morphine", "Codeine", "Oxycodone", "Hydrocodone"],
-    nsaid: ["Ibuprofen", "Naproxen", "Ketorolac", "Aspirin"],
-    contrast: ["Iodinated contrast", "CT contrast media"],
-  };
+  const allergiesMap = [
+    {
+      category: "PENICILLINS & BETA-LACTAMS",
+      keywords: ["penicillin", "amoxicillin", "ampicillin", "piperacillin", "tazobactam", "augmentin", "beta-lactam"],
+      warnings: ["Penicillin G/V", "Amoxicillin", "Ampicillin", "Piperacillin/Tazobactam (Zosyn)", "Augmentin", "Ceftriaxone (Rocephin)", "Cephalexin (Keflex)"],
+    },
+    {
+      category: "ASPIRIN & SALICYLATES",
+      keywords: ["aspirin", "asa", "salicylate", "acetylsalicylic"],
+      warnings: ["Aspirin", "Ecotrin", "ASA-containing compounds"],
+    },
+    {
+      category: "NSAIDS",
+      keywords: ["nsaid", "ibuprofen", "naproxen", "ketorolac", "toradol", "diclofenac", "celebrex", "celecoxib", "meloxicam"],
+      warnings: ["Ibuprofen (Advil/Motrin)", "Naproxen (Aleve)", "Ketorolac (Toradol)", "Diclofenac", "Celecoxib (Celebrex)", "Meloxicam"],
+    },
+    {
+      category: "SULFA DRUGS",
+      keywords: ["sulfa", "sulfamethoxazole", "bactrim", "septra", "sulfonamide"],
+      warnings: ["Bactrim (Sulfamethoxazole/Trimethoprim)", "Septra", "Sulfadiazine", "Sulfasalazine"],
+    },
+    {
+      category: "OPIOIDS",
+      keywords: ["morphine", "codeine", "oxycodone", "hydrocodone", "fentanyl", "hydromorphone", "dilaudid", "tramadol", "opioid", "narcotic"],
+      warnings: ["Morphine", "Codeine", "Oxycodone (Percocet/OxyContin)", "Hydrocodone (Vicodin)", "Fentanyl", "Hydromorphone (Dilaudid)", "Tramadol"],
+    },
+    {
+      category: "IV CONTRAST MEDIA",
+      keywords: ["contrast", "dye", "gadolinium", "iodine contrast"],
+      warnings: ["Iodinated contrast agents", "Gadolinium-based contrast agents"],
+    },
+    {
+      category: "LATEX",
+      keywords: ["latex"],
+      warnings: ["Latex urinary catheters", "Latex-containing gloves and medical supplies"],
+    },
+    {
+      category: "LOCAL ANESTHETICS",
+      keywords: ["lidocaine", "bupivacaine", "novocaine", "xylocaine", "sensocaine"],
+      warnings: ["Lidocaine", "Bupivacaine", "Novocaine", "Xylocaine", "Mepivacaine"],
+    },
+    {
+      category: "ACE INHIBITORS",
+      keywords: ["lisinopril", "enalapril", "ramipril", "benazepril", "ace inhibitor", "ace-inhibitor"],
+      warnings: ["Lisinopril", "Enalapril", "Ramipril", "Benazepril (Risk of Angioedema)"],
+    },
+    {
+      category: "STATINS",
+      keywords: ["statin", "atorvastatin", "simvastatin", "rosuvastatin", "lipitor", "crestor"],
+      warnings: ["Atorvastatin (Lipitor)", "Simvastatin (Zocor)", "Rosuvastatin (Crestor)"],
+    },
+    {
+      category: "ANTICONVULSANTS",
+      keywords: ["phenytoin", "dilantin", "carbamazepine", "tegretol", "lamotrigine", "lamictal"],
+      warnings: ["Phenytoin (Dilantin)", "Carbamazepine (Tegretol)", "Lamotrigine (Lamictal)"],
+    }
+  ];
 
-  for (const [key, drugs] of Object.entries(allergiesMap)) {
-    if (lowercase.includes(key)) {
-      return {
-        allergy: key,
-        warnings: drugs,
-      };
+  for (const group of allergiesMap) {
+    for (const keyword of group.keywords) {
+      if (lowercase.includes(keyword)) {
+        return {
+          allergy: group.category,
+          warnings: group.warnings,
+        };
+      }
     }
   }
   return null;
