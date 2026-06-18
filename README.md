@@ -2,7 +2,7 @@
 
 # AgentWard
 
-**A virtual emergency board where five specialist AI agents triage, plan, investigate, document, and audit a clinical case together — coordinated live over [Band](https://band.ai).**
+**An advanced, self-correcting clinical command console where five specialist AI agents triage, plan, investigate, document, and audit cases — coordinated live over [Band](https://band.ai).**
 
 Built for the **Band of Agents Hackathon** · Track 3 — Regulated & High-Stakes Workflows (Healthcare coordination)
 
@@ -10,40 +10,62 @@ Built for the **Band of Agents Hackathon** · Track 3 — Regulated & High-Stake
 
 ---
 
-## The problem
+## 🚀 Overview
 
-In an emergency department, a single case touches triage, treatment planning, diagnostics, documentation, and quality review — normally across different people, with handoffs that lose context. A single LLM prompt collapses all those roles into one voice and hallucinates. AgentWard splits the work across **five specialised agents that hand off to each other through Band**, each with a distinct clinical contract, and a supervisor that audits the result.
+In a fast-paced emergency department, a single case touches triage, care planning, diagnostics, documentation, and quality assurance. Normally, this involves complex handoffs that lose context.
 
-## The five agents
+**AgentWard** automates and safeguards this workflow by dividing roles among **five specialized agents** that communicate through the Band SDK. It introduces robust clinical safety nets: a **hard allergy safety checker**, an **interactive Human-in-the-Loop (HITL) verification step**, and a **self-correcting Observer audit loop** that regenerates failed agent outputs on the fly.
 
-| Agent | Role | Model | Provider |
-|-------|------|-------|----------|
-| **Triage** | Assigns an Australasian Triage Scale (ATS 1–5) urgency level | `claude-sonnet-4.6` | OpenRouter |
-| **Management** | Evidence-based initial management plan (PubMed + trusted guidelines) | `deepseek-ai/DeepSeek-V4-Flash` | **Featherless** |
-| **Investigation** | Prioritised labs / imaging / ECG workup | `mistralai/Mistral-Small-24B-Instruct-2501` | **Featherless** |
-| **Documentation** | Synthesises one structured ED handover note | `Qwen/Qwen2.5-32B-Instruct` | **Featherless** |
-| **Observer (Audit)** | Quality-audits every agent against its contract | `Qwen/Qwen3-235B-A22B-Thinking-2507` (reasoning) | **Featherless** |
+---
 
-### Why these Featherless models
+## 🛠️ The Agent Grid
 
-We use [Featherless AI](https://featherless.ai) serverless inference for four of the five agents, picking a model per role by benchmark and latency:
+| Agent | Role / Responsibility | Model | Provider |
+|-------|-----------------------|-------|----------|
+| **Triage** | Assigns Australasian Triage Scale (ATS 1–5) and logs reasoning | `anthropic/claude-sonnet-4.6` | **OpenRouter** |
+| **Management** | Evidence-based initial care plan (PubMed + Tavily whitelisted guidelines) | `deepseek-ai/DeepSeek-V4-Flash` | **Featherless** |
+| **Investigation** | Prioritised diagnostic labs, imaging, and bedside diagnostics | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
+| **Documentation** | Compiles case facts into a structured, standard EHR clinical note | `Qwen/Qwen2.5-32B-Instruct` | **Featherless** |
+| **Observer (Audit)** | Audits every agent output against its clinical contract | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
 
-- **Management → `DeepSeek-V4-Flash`** — a high-benchmark, speed-optimised model for fast, well-reasoned clinical plans.
-- **Investigation → `Mistral-Small-24B`** — a light, fast 24B model, ample for structured lab/imaging selection.
-- **Documentation → `Qwen2.5-32B-Instruct`** — reliable, clean instruction-following for consistent note formatting.
-- **Observer → `Qwen3-235B-A22B-Thinking`** — a dedicated **reasoning** model, used deliberately for the audit step where careful verification matters most.
+### Optimized Model Routing
 
-Featherless's single OpenAI-compatible endpoint lets us route each agent to its own open-source model without managing five integrations. Triage runs on OpenRouter (Claude Sonnet 4.6) purely to keep it off the Featherless concurrency budget so Triage and Management can run in parallel.
+We use [Featherless AI](https://featherless.ai) serverless inference to host open-source models optimized for latency, budget, and instruction-following:
+- **Triage** runs on **Claude Sonnet 4.6** via OpenRouter to keep it off the Featherless concurrency budget, allowing Triage and Management planning to run in parallel without hitting limits.
+- **Management** utilizes **DeepSeek-V4-Flash** for high-speed, structured care plan formulation.
+- **Investigation** and **Observer** run **Mistral-Small-24B** for fast instruction following and reliable auditing.
+- **Documentation** runs **Qwen2.5-32B-Instruct** for detailed, standard-compliant EHR clinical summaries.
 
-## How Band is the coordination layer
+---
 
-Band is **not** a logging mirror here — it is the bus the handoffs flow through. For each step the responsible agent **posts its output to a shared Band room using its own agent key**, `@mentioning` the next agent, and the cascade reads the room as it advances. The full conversation is visible in the Band UI exactly as the app shows it.
+## 🔒 Reliability & Safety Guardrails
+
+To ensure safety in a high-stakes clinical environment, AgentWard incorporates three primary guardrails:
+
+### 1. Hard Allergy Safety Checker
+Before planning begins, the backend scans the patient case for 11 critical drug classes (Penicillins, NSAIDs, Opioids, Sulfa, ACE Inhibitors, Contrast, Latex, etc.). If an allergy is found:
+- A `safety_alert` is streamed immediately to display a warning bar in the UI.
+- Strict substitution constraints are injected into the Management Agent's system prompt, ensuring contraindicated medications are never recommended.
+
+### 2. Human-in-the-Loop (HITL) Checkpoint
+The pipeline pauses after Phase 1 (Triage + Care Plan) and yields a `pause` event. Clinicians can review the assigned ATS level, override it (ATS 1-5), input additional vital details or clinical notes, and click **Approve** to resume the live cascade.
+
+### 3. Self-Correction Audit Loop
+The **Observer Agent** audits downstream outputs. If it detects a contract breach (e.g., Management missing PubMed PMIDs or guidelines), it flags the agent (e.g., `[!] Management`). The orchestrator catches the flag, triggers an inline retry passing the critique back to the agent, and updates all downstream dependent logs.
+
+---
+
+## 🌐 Live Coordination over Band
+
+Band is the central message bus. For every phase, the active agent posts its output to a shared Band room using its own agent key, `@mentioning` the next agent in the chain.
+- A **fresh Band room is generated per case** by the Observer agent.
+- All live agent communications are mirrored in real-time in the Band UI.
 
 ```
-            +---------- run in parallel ------------+
- patient -->|  Triage (OpenRouter)   Management(FL) |
+            +---------- Run in Parallel ------------+
+ Patient -->|  Triage (OpenRouter)   Management(FL) |
             +------------------+--------------------+
-                               |  (both post to Band)
+                               |  (Both post to Band)
                          Investigation (FL)
                                |
                          Documentation (FL)
@@ -51,38 +73,51 @@ Band is **not** a logging mirror here — it is the bus the handoffs flow throug
                          Observer / Audit (FL)
 ```
 
-A **fresh Band room is created per conversation** (the Observer agent owns it and recruits the other four), so each case stays clean.
+---
 
-## Evidence
+## 💻 Tech Stack
 
-The Management agent pulls live clinical evidence before planning:
+- **Framework**: Next.js 14 (App Router) + React + TypeScript
+- **Styling**: Tailwind CSS + Framer Motion (for real-time streaming animations)
+- **Agent Protocol**: Band Agent SDK
+- **LLM API**: Featherless AI + OpenRouter
+- **Evidence Search**: NCBI E-utilities (PubMed) + Tavily API
 
-- **PubMed** via the NCBI E-utilities API (ESearch -> ESummary -> EFetch) — direct, no third-party service.
-- **Trusted medical guidelines** via Tavily, restricted to a whitelist of reputable sources (NEJM, Cochrane, NICE, BMJ, WHO, CDC, UpToDate, JAMA, The Lancet, and similar).
+---
 
-## Reliability & safety
+## 🚀 Quick Start (Running Locally)
 
-- **No infinite loops:** the orchestrator runs a fixed linear sequence with a global run-lock and a hard step ceiling — agents never message each other unprompted.
-- **Zero-downtime model fallback:** any model failure falls back once to a cheap reliable Featherless model, so a demo never dies on a capacity blip.
-- **Quality audit:** the Observer verifies each agent met its contract and reports `N/4 contracts met`.
+1. Clone the repository and navigate to the web directory:
+   ```bash
+   cd web
+   npm install
+   ```
+2. Create your local environment file:
+   ```bash
+   cp .env.local.example .env.local
+   ```
+3. Fill in the required API keys inside `.env.local` (Featherless, OpenRouter, NCBI, Tavily, and the 5 Band agent credentials).
+4. Run the development server:
+   ```bash
+   npm run dev
+   ```
+   Open [http://localhost:3000](http://localhost:3000) to view the console.
 
-> AgentWard is a hackathon demonstration. Outputs are AI-generated, may be inaccurate, and must not be used for real clinical decisions.
+---
 
-## Tech stack
+## ☁️ Deployment Guide
 
-- **Next.js 14** (App Router) + React + TypeScript
-- **Tailwind CSS** + Framer Motion
-- **Band Agent API** for multi-agent coordination
-- **Featherless AI** + **OpenRouter** for inference
-- **NCBI E-utilities** + **Tavily** for evidence
+The easiest and most reliable way to host the AgentWard full-stack Next.js app (both frontend and API endpoints together) is on **Vercel**:
 
-## Running locally
+1. **Push your code to GitHub**: Create a repository (or push to your fork). Make sure `web/.env.local` is **never committed** (it is gitignored).
+2. **Import into Vercel**: 
+   - Go to [Vercel](https://vercel.com) and click **Add New > Project**.
+   - Import your GitHub repository.
+3. **Configure Settings**:
+   - Set the **Root Directory** to `web`.
+4. **Environment Variables**:
+   - Copy the environment variables from your local `web/.env.local` and paste them into Vercel's **Environment Variables** UI.
+5. **Deploy**: Click **Deploy**. Vercel will build your Next.js app and serve it on a secure `https` domain.
 
-```bash
-cd web
-npm install
-cp .env.local.example .env.local   # fill in your own keys
-npm run dev                         # http://localhost:3000
-```
-
-Required environment variables are documented in [`web/.env.local.example`](web/.env.local.example): Featherless + OpenRouter keys, NCBI + Tavily keys, and the five Band agent keys/IDs.
+> [!WARNING]
+> Since Next.js API route timeouts on Vercel's hobby plan are limited to 10 seconds, make sure your models respond quickly or upgrade to a Pro plan (which extends the timeout to 5 minutes) to ensure long-running streaming cascades run without truncation.
