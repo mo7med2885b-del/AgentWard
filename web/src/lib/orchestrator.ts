@@ -388,11 +388,25 @@ async function* runCascadeInner(
   }
 
   // Kick off evidence gathering immediately so it's ready by the time the
-  // Management agent runs.
+  // Management agent runs. CRITICAL: this must NEVER block or reject Management.
+  // PubMed (NCBI) and Tavily are external network calls with no built-in
+  // timeout — if either hangs, `await evidencePromise` would stall the whole
+  // cascade after the pause (Management never starts, no error shown). So each
+  // source is individually time-boxed and its failure degrades to an empty
+  // string; Management always proceeds (with or without evidence).
+  const EVIDENCE_TIMEOUT_MS = 20000;
+  const softEvidence = (p: Promise<string>): Promise<string> =>
+    Promise.race([
+      p,
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), EVIDENCE_TIMEOUT_MS)),
+    ]).catch(() => "");
+
   const evidencePromise = Promise.all([
-    gatherEvidence(patientCase + " emergency management guidelines"),
-    trustedMedicalSearch(patientCase + " management guideline"),
-  ]).then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`);
+    softEvidence(gatherEvidence(patientCase + " emergency management guidelines")),
+    softEvidence(trustedMedicalSearch(patientCase + " management guideline")),
+  ])
+    .then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`)
+    .catch(() => "");
 
   // ── PHASE 1: Triage ONLY — streams, then pauses for clinician verification
   //    BEFORE the management plan is built. Running Triage alone (rather than
@@ -405,18 +419,35 @@ async function* runCascadeInner(
   let triageContent = triageStep?.content || "";
 
   // ── HUMAN-IN-THE-LOOP PAUSE POINT (right after triage) ──
-  yield {
-    type: "pause",
-    runId,
-    message: "Triage complete — awaiting clinician verification before management planning.",
-  };
+  // On serverless hosts (Vercel Hobby caps functions at 60s) a human pause would
+  // outlive the function and kill the SSE stream — the cascade would silently
+  // stop after "Approve". Set AUTO_APPROVE=1 in that environment to skip the
+  // human wait and run straight through. Local/Pro keeps the real HITL pause.
+  const autoApprove = process.env.AUTO_APPROVE === "1" || process.env.AUTO_APPROVE === "true";
 
-  const resumePromise = new Promise<ResumeData>((resolve) => {
-    pendingRuns.set(runId, { resolve });
-  });
+  let resumeData: ResumeData;
+  if (autoApprove) {
+    yield {
+      type: "status",
+      agent: "triage",
+      agentName: "TriageAgent",
+      message: "Triage verified (auto-approve) — continuing to management planning…",
+    };
+    resumeData = { approved: true };
+  } else {
+    yield {
+      type: "pause",
+      runId,
+      message: "Triage complete — awaiting clinician verification before management planning.",
+    };
 
-  const resumeData = await resumePromise;
-  pendingRuns.delete(runId);
+    const resumePromise = new Promise<ResumeData>((resolve) => {
+      pendingRuns.set(runId, { resolve });
+    });
+
+    resumeData = await resumePromise;
+    pendingRuns.delete(runId);
+  }
 
   if (resumeData.approved && resumeData.atsOverride) {
     const waitTimes = [0, 0, 10, 30, 60, 120];
