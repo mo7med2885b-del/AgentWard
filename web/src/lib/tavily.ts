@@ -35,6 +35,31 @@ const TRUSTED_DOMAINS = [
   "goldcopd.org", // COPD
   "ginasthma.org", // Asthma
   "gastro.org", // AGA gastroenterology
+  // Additional verified specialty colleges & societies
+  "acponline.org", // American College of Physicians
+  "aan.com", // American Academy of Neurology
+  "facs.org", // American College of Surgeons
+  "ahajournals.org", // American Heart Association journals
+  "rheumatology.org", // American College of Rheumatology
+  "aad.org", // American Academy of Dermatology
+  "acep.org", // American College of Emergency Physicians
+  "thoracic.org", // American Thoracic Society
+  "endocrine.org", // Endocrine Society
+  "ese-hormones.org", // European Society of Endocrinology
+  "auanet.org", // American Urological Association
+  "rcog.org.uk", // Royal College of Obstetricians & Gynaecologists (UK)
+  "psychiatry.org", // American Psychiatric Association
+  "aacap.org", // American Academy of Child & Adolescent Psychiatry
+  "aans.org", // American Association of Neurological Surgeons
+  "aaos.org", // American Academy of Orthopaedic Surgeons
+  "aafp.org", // American Academy of Family Physicians
+  "aasld.org", // American Association for the Study of Liver Diseases
+  "asco.org", // American Society of Clinical Oncology
+  "hematology.org", // American Society of Hematology
+  "chestnet.org", // American College of Chest Physicians
+  "sccm.org", // Society of Critical Care Medicine
+  "acr.org", // American College of Radiology
+  "ranzcog.edu.au", // Royal Australian & NZ College of Obstetricians & Gynaecologists
 ];
 
 /** Search trusted medical sites; returns a formatted excerpt block. */
