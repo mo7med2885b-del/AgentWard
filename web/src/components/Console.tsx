@@ -62,7 +62,12 @@ export function Console() {
     () => parseTriage(outputs.triage?.content ?? ""),
     [outputs.triage]
   );
-  const vitals: Vital[] = useMemo(() => parseVitals(caseText), [caseText]);
+  const vitals: Vital[] = useMemo(() => {
+    if (triage?.vitals && triage.vitals.length > 0) {
+      return triage.vitals;
+    }
+    return parseVitals(caseText);
+  }, [triage, caseText]);
   const investigations: Investigation[] = useMemo(
     () => parseInvestigations(outputs.investigation?.content ?? ""),
     [outputs.investigation]

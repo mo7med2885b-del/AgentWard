@@ -320,7 +320,7 @@ export async function* runCascade(
 
   try {
     let roomId: string | undefined;
-    if (opts?.newRoom) {
+    if (opts?.newRoom !== false) {
       yield { type: "status", message: "Creating a fresh Band room…" };
       const created = await createRoomWithAgents();
       if (created) {
@@ -340,6 +340,84 @@ export async function* runCascade(
   } finally {
     cascadeRunning = false;
   }
+}
+
+// Helper to run two generators in parallel
+async function* mergeGenerators(
+  triageGen: AsyncGenerator<CascadeEvent, CascadeStep>,
+  managementGen: AsyncGenerator<CascadeEvent, CascadeStep>
+): AsyncGenerator<CascadeEvent, { triageStep: CascadeStep | null; managementStep: CascadeStep | null }> {
+  const queue: CascadeEvent[] = [];
+  let resolveNext: (() => void) | null = null;
+
+  let triageStep: CascadeStep | null = null;
+  let managementStep: CascadeStep | null = null;
+  let triageDone = false;
+  let managementDone = false;
+
+  const pushEvent = (ev: CascadeEvent) => {
+    queue.push(ev);
+    resolveNext?.();
+    resolveNext = null;
+  };
+
+  const runTriage = async () => {
+    try {
+      while (true) {
+        const next = await triageGen.next();
+        if (next.done) {
+          triageStep = next.value;
+          triageDone = true;
+          break;
+        }
+        pushEvent(next.value);
+      }
+    } catch (err) {
+      triageDone = true;
+      pushEvent({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const runManagement = async () => {
+    try {
+      while (true) {
+        const next = await managementGen.next();
+        if (next.done) {
+          managementStep = next.value;
+          managementDone = true;
+          break;
+        }
+        pushEvent(next.value);
+      }
+    } catch (err) {
+      managementDone = true;
+      pushEvent({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const triagePromise = runTriage();
+  const managementPromise = runManagement();
+
+  while (!triageDone || !managementDone || queue.length > 0) {
+    if (queue.length > 0) {
+      yield queue.shift()!;
+    } else {
+      await new Promise<void>((r) => (resolveNext = r));
+    }
+  }
+
+  await Promise.all([triagePromise, managementPromise]);
+
+  return {
+    triageStep,
+    managementStep,
+  };
 }
 
 async function* runCascadeInner(
@@ -372,28 +450,45 @@ async function* runCascadeInner(
   }
 
   // Kick off evidence gathering immediately so it's ready by the time the
-  // Management agent runs (after the clinician verifies triage). This keeps the
-  // expensive PubMed/Tavily lookups off the critical path without forcing
-  // Management to run before the human checkpoint.
+  // Management agent runs.
   const evidencePromise = Promise.all([
     gatherEvidence(patientCase + " emergency management guidelines"),
     trustedMedicalSearch(patientCase + " management guideline"),
   ]).then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`);
 
-  // ── PHASE 1: Triage ONLY — streams, then pauses for clinician verification
-  //    BEFORE the management plan is built. This is the correct clinical order:
-  //    the doctor confirms/overrides the priority first. ──
+  // ── PHASE 1: Triage & Management run in parallel ──
   yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "TriageAgent is working…" };
+  yield {
+    type: "status",
+    agent: "management",
+    agentName: "ManagementAgent",
+    message: "ManagementAgent building evidence-based plan…",
+  };
   countStep();
-  let triageStep: CascadeStep | null = yield* runAgent("triage", caseBlock, "management", roomId);
+  countStep();
 
-  if (!triageStep) return;
+  const triageGen = runAgent("triage", caseBlock, "investigation", roomId);
+  const startManagement = async function* () {
+    const evidence = await evidencePromise;
+    return yield* runAgent(
+      "management",
+      `${finalManagementCaseBlock}\n\n${evidence}`,
+      "investigation",
+      roomId
+    );
+  };
+  const managementGen = startManagement();
 
-  // ── HUMAN-IN-THE-LOOP PAUSE POINT (right after triage) ──
+  let { triageStep, managementStep } = yield* mergeGenerators(triageGen, managementGen);
+
+  let triageContent = triageStep?.content || "";
+  let managementContent = managementStep?.content || "";
+
+  // ── HUMAN-IN-THE-LOOP PAUSE POINT (after both parallel Triage and Management finish) ──
   yield {
     type: "pause",
     runId,
-    message: "Triage complete — awaiting clinician verification before management planning.",
+    message: "Triage & Management complete — awaiting clinician verification before proceeding.",
   };
 
   const resumePromise = new Promise<ResumeData>((resolve) => {
@@ -403,8 +498,6 @@ async function* runCascadeInner(
   const resumeData = await resumePromise;
   pendingRuns.delete(runId);
 
-  let triageContent = triageStep?.content || "";
-
   if (resumeData.approved && resumeData.atsOverride) {
     const waitTimes = [0, 0, 10, 30, 60, 120];
     triageContent = `TRIAGE: ATS ${resumeData.atsOverride} | Clinician Overridden | Max wait: ${waitTimes[resumeData.atsOverride]} minutes\n**SUMMARY:** [Clinician Overridden] Case prioritisation verified and adjusted by doctor.`;
@@ -413,26 +506,6 @@ async function* runCascadeInner(
       yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
     }
   }
-
-  // ── PHASE 2: Management plan (now informed by the verified triage + any
-  //    clinician note). Streams live. ──
-  const clinicianNote =
-    resumeData.approved && resumeData.note ? `\n\nCLINICIAN INPUT:\n${resumeData.note}` : "";
-  yield {
-    type: "status",
-    agent: "management",
-    agentName: "ManagementAgent",
-    message: "ManagementAgent building evidence-based plan…",
-  };
-  countStep();
-  const evidence = await evidencePromise;
-  let managementStep: CascadeStep | null = yield* runAgent(
-    "management",
-    `${finalManagementCaseBlock}\n\nVERIFIED TRIAGE:\n${triageContent}${clinicianNote}${evidence}`,
-    "investigation",
-    roomId
-  );
-  let managementContent = managementStep?.content || "";
 
   // Helper to compile transcript for sequential agents
   let investigationContent = "";
