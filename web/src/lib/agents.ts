@@ -161,5 +161,13 @@ OUTPUT:
 
 **Overall: [N]/4 contracts met.**
 
+Then, on the VERY LAST line, output a single machine-readable decision naming the
+ONE agent (if any) whose work has a genuine clinical or contract problem serious
+enough to be regenerated. Use EXACTLY this format and nothing else on the line:
+MENTION: <TriageAgent|ManagementAgent|InvestigationAgent|DocumentationAgent|NONE> — <reason>
+Rules: choose NONE unless there is a real defect that materially affects patient
+care or a broken contract. A minor wording nitpick is NOT grounds to mention an
+agent — prefer NONE. Mention at most one agent, the most critical.
+
 ${NO_TABLES}`,
 };

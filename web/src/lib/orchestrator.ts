@@ -217,11 +217,32 @@ function checkAllergies(patientCase: string): { allergy: string; warnings: strin
 }
 
 const AGENT_NAME_TO_ID: Record<string, AgentId> = {
-  Triage: "triage",
-  Management: "management",
-  Investigation: "investigation",
-  Documentation: "documentation",
+  triageagent: "triage",
+  managementagent: "management",
+  investigationagent: "investigation",
+  documentationagent: "documentation",
+  // tolerate the short forms too
+  triage: "triage",
+  management: "management",
+  investigation: "investigation",
+  documentation: "documentation",
 };
+
+// Parse the Observer's single supervisory decision line:
+//   MENTION: <AgentName|NONE> — <reason>
+// Returns the agent the Observer chose to flag (or null for NONE / no line).
+// The em-dash, hyphen, or colon are all accepted as the reason separator.
+function parseObserverMention(
+  text: string
+): { agent: AgentId; reason: string } | null {
+  const m = text.match(/MENTION:\s*([A-Za-z]+)\s*(?:[—–\-:]\s*(.*))?$/im);
+  if (!m) return null;
+  const name = m[1].trim().toLowerCase();
+  if (name === "none") return null;
+  const agent = AGENT_NAME_TO_ID[name];
+  if (!agent) return null;
+  return { agent, reason: (m[2] || "").trim() || "quality issue flagged by Observer" };
+}
 
 function nowStr(): string {
   const d = new Date(Date.now() + 3 * 3600 * 1000); // UTC+3
@@ -246,7 +267,10 @@ async function* runAgent(
   userMsg: string,
   mentionNext: AgentId | null,
   roomId?: string,
-  temperatureOverride?: number
+  temperatureOverride?: number,
+  // When true, runAgent does NOT post to Band — the caller posts it itself
+  // (used for the Observer, whose @mention target is only known after the audit).
+  skipBandPost?: boolean
 ): AsyncGenerator<CascadeEvent, CascadeStep> {
   const meta = AGENTS[agent];
   let systemPrompt = SYSTEM_PROMPTS[agent];
@@ -291,12 +315,14 @@ async function* runAgent(
   const finishedAt = new Date().toISOString();
 
   const next = mentionNext ? AGENTS[mentionNext] : null;
-  const bandSynced = await postToBand(
-    AGENT_KEYS[agent],
-    result.content,
-    next ? { id: next.bandAgentId, handle: next.bandHandle, name: next.name } : undefined,
-    roomId
-  );
+  const bandSynced = skipBandPost
+    ? false
+    : await postToBand(
+        AGENT_KEYS[agent],
+        result.content,
+        next ? { id: next.bandAgentId, handle: next.bandHandle, name: next.name } : undefined,
+        roomId
+      );
 
   const step: CascadeStep = {
     agent,
@@ -533,31 +559,36 @@ async function* runCascadeInner(
   for (let attempt = 1; attempt <= 2; attempt++) {
     yield { type: "status", agent: "observer", agentName: "ObserverAgent", message: `ObserverAgent auditing (Attempt ${attempt})…` };
     countStep();
-    observerStep = yield* runAgent("observer", compileTranscriptFor("observer"), null, roomId);
+    observerStep = yield* runAgent("observer", compileTranscriptFor("observer"), null, roomId, undefined, true);
     observerContent = observerStep.content;
 
-    // Find lines matching "[!] Agent" indicating a failure
-    const failureMatches = [...observerContent.matchAll(/\[!\]\s*(Triage|Management|Investigation|Documentation)\s*—\s*(.*)/gi)];
-    
-    if (failureMatches.length === 0 || attempt === 2) {
-      break; // No failures or we already did the retry
-    }
-
-    // Identify first retryable failed agent
+    // The Observer makes ONE explicit decision on its last line:
+    //   MENTION: <AgentName|NONE> — reason
+    // This is a deliberate supervisory @mention (real Band collaboration), NOT a
+    // word-match on the audit body. We parse that single directive, route the
+    // retry from it, and post the Observer's audit to Band @mentioning that agent.
+    const mention = parseObserverMention(observerContent);
     let agentToRetry: AgentId | null = null;
     let failureReason = "";
-    for (const match of failureMatches) {
-      const name = match[1];
-      const reason = match[2];
-      const agentId = AGENT_NAME_TO_ID[name.charAt(0).toUpperCase() + name.slice(1).toLowerCase()];
-      if (agentId && !retriedAgents.has(agentId)) {
-        agentToRetry = agentId;
-        failureReason = reason;
-        break;
-      }
+    if (mention && !retriedAgents.has(mention.agent)) {
+      agentToRetry = mention.agent;
+      failureReason = mention.reason;
     }
 
-    if (!agentToRetry) break;
+    // Post the Observer's audit to Band, @mentioning the flagged agent (or no one
+    // if the audit passed clean). This makes the supervisor's call visible in the
+    // room exactly like the other handoffs.
+    const target = agentToRetry ? AGENTS[agentToRetry] : null;
+    await postToBand(
+      AGENT_KEYS.observer,
+      observerContent,
+      target ? { id: target.bandAgentId, handle: target.bandHandle, name: target.name } : undefined,
+      roomId
+    );
+
+    if (!agentToRetry || attempt === 2) {
+      break; // Observer passed everyone, or we already did our one retry.
+    }
 
     retriedAgents.add(agentToRetry);
 
