@@ -36,6 +36,9 @@ function providerCfg(name: ProviderName): ProviderCfg {
 interface ModelRoute {
   provider: ProviderName;
   model: string;
+  // Optional second-layer model tried before the global FALLBACK if this route
+  // fails. Used so Management runs on DeepSeek-V4-Flash first, then Gemini.
+  secondary?: ModelRoute;
 }
 
 // Cheap, always-on Featherless fallback when a primary model is unavailable.
@@ -45,16 +48,20 @@ const FALLBACK: ModelRoute = { provider: "featherless", model: "Qwen/Qwen2.5-32B
 //   triage         -> OpenRouter (Claude Sonnet 4.6) — MUST stay off Featherless
 //                     so Triage + Management run in PARALLEL without blowing
 //                     Featherless's 4-unit concurrency cap (429s otherwise).
-//   management     -> high-benchmark fast model (DeepSeek-V4-Flash)
+//   management     -> DeepSeek-V4-Flash, then Gemini 3 Flash as a second layer
 //   investigation  -> light/fast capable model (Mistral-Small-24B)
 //   documentation  -> reliable, clean-formatting model (Qwen2.5-32B)
 //   observer/audit -> fast validation model (Mistral-Small-24B)
 export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
   triage: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-  // Gemini 3 Flash via OpenRouter — fast, reliable care-plan model. (Runs on
-  // OpenRouter, off the Featherless concurrency budget; falls back to Qwen on
-  // Featherless if OpenRouter is unavailable.)
-  management: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
+  // Management runs on DeepSeek-V4-Flash (Featherless) as the primary care-plan
+  // model, with Gemini 3 Flash (OpenRouter) as a second layer if DeepSeek fails,
+  // and the global Qwen FALLBACK as the final safety net.
+  management: {
+    provider: "featherless",
+    model: "deepseek-ai/DeepSeek-V4-Flash",
+    secondary: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
+  },
   investigation: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
   documentation: { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" },
   observer: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
@@ -63,6 +70,22 @@ export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
 export interface LlmResult {
   content: string;
   provider: string;
+}
+
+// Ordered list of models to try for an agent: primary → its optional secondary
+// (second layer) → the global FALLBACK. Duplicates and the FALLBACK-equals-primary
+// case are de-duped so we never call the same model twice in a row.
+function buildAttempts(primary: ModelRoute): ModelRoute[] {
+  const chain: ModelRoute[] = [{ provider: primary.provider, model: primary.model }];
+  if (primary.secondary) chain.push(primary.secondary);
+  chain.push(FALLBACK);
+  const seen = new Set<string>();
+  return chain.filter((r) => {
+    const key = `${r.provider}:${r.model}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function callOnce(
@@ -194,11 +217,7 @@ export async function streamForAgent(
   onToken: (delta: string) => void,
   opts?: { temperature?: number; maxTokens?: number }
 ): Promise<LlmResult> {
-  const primary = AGENT_ROUTES[agent];
-  const attempts: ModelRoute[] =
-    primary.provider === FALLBACK.provider && primary.model === FALLBACK.model
-      ? [primary]
-      : [primary, FALLBACK];
+  const attempts = buildAttempts(AGENT_ROUTES[agent]);
 
   let lastErr: unknown = null;
   for (let i = 0; i < attempts.length; i++) {
@@ -239,11 +258,7 @@ export async function completeForAgent(
   user: string,
   opts?: { temperature?: number; maxTokens?: number }
 ): Promise<LlmResult> {
-  const primary = AGENT_ROUTES[agent];
-  const attempts: ModelRoute[] =
-    primary.provider === FALLBACK.provider && primary.model === FALLBACK.model
-      ? [primary]
-      : [primary, FALLBACK];
+  const attempts = buildAttempts(AGENT_ROUTES[agent]);
 
   let lastErr: unknown = null;
   for (const route of attempts) {

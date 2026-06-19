@@ -229,9 +229,9 @@ function nowStr(): string {
 }
 
 function maxTokensFor(agent: AgentId): number {
-  // Management runs on Gemini 3 Flash, a REASONING model: it spends tokens on
-  // internal thinking before the visible answer, so a tight cap can leave the
-  // visible content empty. Give it generous headroom.
+  // Management runs on DeepSeek-V4-Flash (with Gemini 3 Flash as a second layer).
+  // These can spend tokens on internal reasoning before the visible answer, so a
+  // tight cap can leave the visible content empty. Give it generous headroom.
   if (agent === "management") return 12000;
   if (agent === "documentation") return 6000;
   return 4000;
