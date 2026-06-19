@@ -23,7 +23,7 @@ In a fast-paced emergency department, a single case touches triage, care plannin
 | Agent | Role / Responsibility | Model | Provider |
 |-------|-----------------------|-------|----------|
 | **Triage** | Assigns Australasian Triage Scale (ATS 1–5) and logs reasoning | `anthropic/claude-sonnet-4.6` | **OpenRouter** |
-| **Management** | Evidence-based initial care plan (PubMed + Tavily whitelisted guidelines) | `deepseek-ai/DeepSeek-V4-Pro` | **Featherless** |
+| **Management** | Evidence-based initial care plan (PubMed + Tavily whitelisted guidelines) | `deepseek-ai/DeepSeek-V4-Flash` → `google/gemini-3-flash-preview` (fallback) | **Featherless** → **OpenRouter** |
 | **Investigation** | Prioritised diagnostic labs, imaging, and bedside diagnostics | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
 | **Documentation** | Compiles case facts into a structured, standard EHR clinical note | `Qwen/Qwen2.5-32B-Instruct` | **Featherless** |
 | **Observer (Audit)** | Audits every agent output against its clinical contract | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
@@ -32,7 +32,7 @@ In a fast-paced emergency department, a single case touches triage, care plannin
 
 We use [Featherless AI](https://featherless.ai) serverless inference to host open-source models optimized for latency, budget, and instruction-following:
 - **Triage** runs on **Claude Sonnet 4.6** via OpenRouter to keep it off the Featherless concurrency budget, allowing Triage and Management planning to run in parallel without hitting limits.
-- **Management** utilizes **DeepSeek-V4-Pro** for high-quality, structured care plan formulation.
+- **Management** runs on **DeepSeek-V4-Flash** for fast, high-quality structured care-plan formulation, with **Gemini 3 Flash** (OpenRouter) as an automatic second-layer fallback and **Qwen2.5-32B** as a final safety net — so a plan is always produced even if a provider is unavailable.
 - **Investigation** and **Observer** run **Mistral-Small-24B** for fast instruction following and reliable auditing.
 - **Documentation** runs **Qwen2.5-32B-Instruct** for detailed, standard-compliant EHR clinical summaries.
 
@@ -54,10 +54,14 @@ Matching is **misspelling-tolerant** — a per-token Levenshtein distance of ≤
 > Roadmap: back this with a structured drug-interaction database (RxNorm / First Databank) for full formulary coverage — still deterministic, never an LLM.
 
 ### 2. Human-in-the-Loop (HITL) Checkpoint
-The pipeline pauses after Phase 1 (Triage + Care Plan) and yields a `pause` event. Clinicians can review the assigned ATS level, override it (ATS 1-5), input additional vital details or clinical notes, and click **Approve** to resume the live cascade.
+The pipeline surfaces a clinician verification step **after Triage and before the Management plan is built**. Clinicians review the assigned ATS level, override it (ATS 1-5), add vital details or clinical notes, and click **Approve** before the cascade continues.
+
+On a long-lived server the backend yields a real `pause` event and waits for the clinician's resume. On stateless serverless hosts (e.g. Vercel), where a function cannot hold an open stream while waiting for a human, the cascade runs straight through (`AUTO_APPROVE`) while the verification overlay is presented client-side — so the checkpoint stays in the workflow without a broken cross-instance wait.
 
 ### 3. Self-Correction Audit Loop
-The **Observer Agent** audits the whole cascade and can send **any** of the four upstream agents (Triage, Management, Investigation, or Documentation) back to reprocess. If it detects a contract breach — for example Management missing PubMed PMIDs, or Triage producing an invalid ATS line — it flags that agent with a `[!]` marker. The orchestrator parses the flag, re-runs the flagged agent with the Observer's critique injected, then re-runs every **downstream** agent that depended on it so the final note stays consistent. Each retry is posted back into the shared Band room, so the correction conversation between the Observer and the corrected agent is visible live in the Band chat — genuine agent-to-agent collaboration, not a silent local retry.
+The **Observer Agent** audits the whole cascade and can send **any** of the four upstream agents (Triage, Management, Investigation, or Documentation) back to reprocess. Rather than a brittle word-match on its report, the Observer makes a single explicit decision — it ends its audit with a machine-readable directive (`MENTION: <Agent|NONE> — reason`) naming the one agent whose work has a genuine, care-affecting defect, or `NONE` when everything passes.
+
+The Observer then **posts its audit into the shared Band room, `@mentioning` that agent** — exactly like the other handoffs — and the orchestrator routes the retry from that same mention. The flagged agent is re-run with the Observer's critique injected, followed by every **downstream** agent that depended on it so the final note stays consistent. Because the supervisor's decision and the correction are real Band messages, the Observer-to-agent conversation is visible live in the Band chat — genuine agent-to-agent collaboration, not a silent local retry. When the audit passes clean, the Observer mentions `NONE` and the cascade finishes without re-running anything.
 
 ---
 
