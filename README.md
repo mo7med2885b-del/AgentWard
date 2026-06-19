@@ -55,6 +55,17 @@ The **Observer Agent** audits the whole cascade and can send **any** of the four
 
 ---
 
+## 📚 Verified Evidence Only
+
+The Management Agent never searches the open web. Its evidence comes from two restricted, medically verified sources:
+
+- **PubMed** via the **NCBI E-utilities API** (ESearch → ESummary → EFetch) — peer-reviewed biomedical literature, cited by real PMID with clickable links.
+- **Tavily web search restricted to a strict whitelist** of authoritative, medically verified organisations and guideline bodies. The query **cannot return results from anywhere else** — only from sources such as **WHO, NICE, CDC, NIH, USPSTF, Cochrane, BMJ, JAMA, The Lancet, NEJM, UpToDate, ACC/AHA, ESC, IDSA, ACOG, AAP, NCCN, KDIGO, GOLD, GINA, SIGN, and GIN.** (See [`web/src/lib/tavily.ts`](web/src/lib/tavily.ts) for the full `include_domains` list.)
+
+This `include_domains` constraint eliminates general-web hallucination and blocks consumer/blog/news sources, so every cited guideline traces back to a recognised clinical authority.
+
+---
+
 ## 🌐 Live Coordination over Band
 
 Band is the central message bus. For every phase, the active agent posts its output to a shared Band room using its own agent key, `@mentioning` the next agent in the chain.
