@@ -51,7 +51,7 @@ Before planning begins, the backend scans the patient case for 11 critical drug 
 The pipeline pauses after Phase 1 (Triage + Care Plan) and yields a `pause` event. Clinicians can review the assigned ATS level, override it (ATS 1-5), input additional vital details or clinical notes, and click **Approve** to resume the live cascade.
 
 ### 3. Self-Correction Audit Loop
-The **Observer Agent** audits downstream outputs. If it detects a contract breach (e.g., Management missing PubMed PMIDs or guidelines), it flags the agent (e.g., `[!] Management`). The orchestrator catches the flag, triggers an inline retry passing the critique back to the agent, and updates all downstream dependent logs.
+The **Observer Agent** audits the whole cascade and can send **any** of the four upstream agents (Triage, Management, Investigation, or Documentation) back to reprocess. If it detects a contract breach — for example Management missing PubMed PMIDs, or Triage producing an invalid ATS line — it flags that agent with a `[!]` marker. The orchestrator parses the flag, re-runs the flagged agent with the Observer's critique injected, then re-runs every **downstream** agent that depended on it so the final note stays consistent. Each retry is posted back into the shared Band room, so the correction conversation between the Observer and the corrected agent is visible live in the Band chat — genuine agent-to-agent collaboration, not a silent local retry.
 
 ---
 
@@ -96,28 +96,9 @@ Band is the central message bus. For every phase, the active agent posts its out
    ```bash
    cp .env.local.example .env.local
    ```
-3. Fill in the required API keys inside `.env.local` (Featherless, OpenRouter, NCBI, Tavily, and the 5 Band agent credentials).
+3. Fill in the required API keys inside `.env.local`: **Featherless**, **OpenRouter** (for Triage), **NCBI** (PubMed), **Tavily**, and the **5 Band agent credentials** (API key + UUID + handle for Triage, Management, Investigation, Documentation, Observer). All variables are documented in [`web/.env.local.example`](web/.env.local.example).
 4. Run the development server:
    ```bash
    npm run dev
    ```
    Open [http://localhost:3000](http://localhost:3000) to view the console.
-
----
-
-## ☁️ Deployment Guide
-
-The easiest and most reliable way to host the AgentWard full-stack Next.js app (both frontend and API endpoints together) is on **Vercel**:
-
-1. **Push your code to GitHub**: Create a repository (or push to your fork). Make sure `web/.env.local` is **never committed** (it is gitignored).
-2. **Import into Vercel**: 
-   - Go to [Vercel](https://vercel.com) and click **Add New > Project**.
-   - Import your GitHub repository.
-3. **Configure Settings**:
-   - Set the **Root Directory** to `web`.
-4. **Environment Variables**:
-   - Copy the environment variables from your local `web/.env.local` and paste them into Vercel's **Environment Variables** UI.
-5. **Deploy**: Click **Deploy**. Vercel will build your Next.js app and serve it on a secure `https` domain.
-
-> [!WARNING]
-> Since Next.js API route timeouts on Vercel's hobby plan are limited to 10 seconds, make sure your models respond quickly or upgrade to a Pro plan (which extends the timeout to 5 minutes) to ensure long-running streaming cascades run without truncation.

@@ -2,20 +2,39 @@
 // reputable clinical sources. Ported from the Python ManagementAgent.
 
 const TRUSTED_DOMAINS = [
+  // General journals & evidence libraries
   "nejm.org",
-  "cochrane.org",
-  "nice.org.uk",
+  "cochranelibrary.com",
+  "bmj.com",
+  "jamanetwork.com",
+  "thelancet.com",
+  "uptodate.com",
   "medscape.com",
   "mayoclinic.org",
-  "cdc.gov",
+  // Public-health & national bodies
   "who.int",
-  "bmj.com",
-  "uptodate.com",
+  "nice.org.uk",
+  "cdc.gov",
+  "nih.gov",
+  "uspreventiveservicestaskforce.org",
+  "sign.ac.uk",
+  "g-i-n.net",
+  // Australian guidelines (kept from original)
   "tg.org.au",
   "racgp.org.au",
   "aci.health.nsw.gov.au",
-  "jamanetwork.com",
-  "thelancet.com",
+  // Specialty societies
+  "acc.org", // ACC/AHA cardiology
+  "escardio.org", // European Society of Cardiology
+  "diabetes.org", // ADA
+  "idsociety.org", // IDSA infectious disease
+  "acog.org", // OB/GYN
+  "aap.org", // Pediatrics
+  "nccn.org", // Oncology
+  "kdigo.org", // Nephrology
+  "goldcopd.org", // COPD
+  "ginasthma.org", // Asthma
+  "gastro.org", // AGA gastroenterology
 ];
 
 /** Search trusted medical sites; returns a formatted excerpt block. */
