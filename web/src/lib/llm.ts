@@ -51,10 +51,10 @@ const FALLBACK: ModelRoute = { provider: "featherless", model: "Qwen/Qwen2.5-32B
 //   observer/audit -> fast validation model (Mistral-Small-24B)
 export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
   triage: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-  // NOTE: DeepSeek-V4-Flash on Featherless returns malformed JSON (duplicate
-  // "content" keys) -> empty parse -> Management silently failed. Use V4-Pro,
-  // which returns clean responses and is at least as capable for care plans.
-  management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Pro" },
+  // DeepSeek-V4-Flash — fast care-plan model. (V4-Flash can emit chunks the
+  // strict JSON parser chokes on; the stream parser below tolerates that and a
+  // non-stream retry covers any residual empty-content case.)
+  management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Flash" },
   investigation: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
   documentation: { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" },
   observer: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
@@ -203,12 +203,20 @@ export async function streamForAgent(
   let lastErr: unknown = null;
   for (let i = 0; i < attempts.length; i++) {
     const route = attempts[i];
+    // 1. Try streaming first (live token preview only on the first attempt).
     try {
-      // Only forward live tokens for the first attempt; a fallback restart
-      // would otherwise duplicate text in the live preview.
       const sink = i === 0 ? onToken : () => {};
       const content = await callOnceStream(route, system, user, sink, opts);
       return { content, provider: `${route.provider}:${route.model}` };
+    } catch (err) {
+      lastErr = err;
+    }
+    // 2. Stream failed (e.g. DeepSeek-V4-Flash emitting malformed delta chunks
+    //    that yield empty content). Retry the SAME model non-streaming, which
+    //    reads the whole message at once and sidesteps the bad-delta issue.
+    try {
+      const content = await callOnce(route, system, user, opts);
+      return { content, provider: `${route.provider}:${route.model} (non-stream)` };
     } catch (err) {
       lastErr = err;
       continue;
