@@ -229,7 +229,11 @@ function nowStr(): string {
 }
 
 function maxTokensFor(agent: AgentId): number {
-  if (agent === "management" || agent === "documentation") return 6000;
+  // Management runs on Gemini 3 Flash, a REASONING model: it spends tokens on
+  // internal thinking before the visible answer, so a tight cap can leave the
+  // visible content empty. Give it generous headroom.
+  if (agent === "management") return 12000;
+  if (agent === "documentation") return 6000;
   return 4000;
 }
 
@@ -470,13 +474,27 @@ async function* runCascadeInner(
   };
   countStep();
   const evidence = await evidencePromise;
-  let managementStep: CascadeStep | null = yield* runAgent(
-    "management",
-    `${finalManagementCaseBlock}\n\nVERIFIED TRIAGE:\n${triageContent}${clinicianNote}${evidence}`,
-    "investigation",
-    roomId
-  );
-  let managementContent = managementStep?.content || "";
+  let managementStep: CascadeStep | null = null;
+  let managementContent = "";
+  try {
+    managementStep = yield* runAgent(
+      "management",
+      `${finalManagementCaseBlock}\n\nVERIFIED TRIAGE:\n${triageContent}${clinicianNote}${evidence}`,
+      "investigation",
+      roomId
+    );
+    managementContent = managementStep?.content || "";
+  } catch (err) {
+    // Surface the REAL reason instead of silently stalling the cascade.
+    yield {
+      type: "error",
+      agent: "management",
+      agentName: "ManagementAgent",
+      message: `ManagementAgent failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+    // Continue the pipeline so downstream agents (and the audit) still run with
+    // whatever context exists, rather than leaving the run hung.
+  }
 
   // Helper to compile transcript for sequential agents
   let investigationContent = "";
