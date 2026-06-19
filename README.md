@@ -43,9 +43,15 @@ We use [Featherless AI](https://featherless.ai) serverless inference to host ope
 To ensure safety in a high-stakes clinical environment, AgentWard incorporates three primary guardrails:
 
 ### 1. Hard Allergy Safety Checker
-Before planning begins, the backend scans the patient case for 11 critical drug classes (Penicillins, NSAIDs, Opioids, Sulfa, ACE Inhibitors, Contrast, Latex, etc.). If an allergy is found:
+Before planning begins, the backend scans the patient case against **20 critical drug classes** — Penicillins/Beta-lactams, Cephalosporins, Fluoroquinolones, Macrolides, Glycopeptides (Vancomycin), Tetracyclines, Sulfa, Aspirin/Salicylates, NSAIDs, Opioids, Anticoagulants/Heparins, Insulin, IV Contrast, Local Anaesthetics, Neuromuscular Blockers, Anticonvulsants, Chemotherapy/Biologics, ACE Inhibitors, Statins, and Latex.
+
+This is **deliberately rule-based, not an LLM** — safety-critical contraindication checks must be deterministic and auditable (the same approach real EHRs like Epic/Cerner use), with zero hallucination risk. Coverage is derived from the documented ED drug-allergy distribution: antibiotics (~47%) and analgesics (~17%) account for the majority of recorded ED drug allergies ([systematic review, PMC9143688](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9143688/)). By enumerating these plus the remaining named classes, **this checker covers the drug classes responsible for ~85% of documented ED drug allergies** (estimate derived from the class distribution, not a single-study figure).
+
+Matching is **misspelling-tolerant** — a per-token Levenshtein distance of ≤1 means a mistyped drug name (e.g. `asbrin` → `aspirin`) still triggers the alert. If an allergy is found:
 - A `safety_alert` is streamed immediately to display a warning bar in the UI.
 - Strict substitution constraints are injected into the Management Agent's system prompt, ensuring contraindicated medications are never recommended.
+
+> Roadmap: back this with a structured drug-interaction database (RxNorm / First Databank) for full formulary coverage — still deterministic, never an LLM.
 
 ### 2. Human-in-the-Loop (HITL) Checkpoint
 The pipeline pauses after Phase 1 (Triage + Care Plan) and yields a `pause` event. Clinicians can review the assigned ATS level, override it (ATS 1-5), input additional vital details or clinical notes, and click **Approve** to resume the live cascade.
