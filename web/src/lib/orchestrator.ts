@@ -1,8 +1,11 @@
 // The cascade orchestrator.
 //
-// Phase 1 (PARALLEL): Triage + Management both run from the raw patient case.
-// Phase 2 (SEQUENTIAL): Investigation -> Documentation -> Observer, each using
-// the accumulated outputs.
+// Phase 1: Triage runs alone and streams, then the pipeline PAUSES for the
+//          clinician to verify/override the ATS level (human-in-the-loop).
+// Phase 2: After verification, Management builds the plan (informed by the
+//          verified triage + any clinician note).
+// Phase 3: Investigation -> Documentation -> Observer run sequentially, with an
+//          Observer self-correction loop that can re-run a flagged agent.
 //
 // Each completed step is posted to the Band room as that agent (@mentioning the
 // next where sensible), so the collaboration genuinely flows through Band.
@@ -12,7 +15,7 @@ import { AGENTS, SYSTEM_PROMPTS } from "./agents";
 import { streamForAgent } from "./llm";
 import { gatherEvidence } from "./pubmed";
 import { trustedMedicalSearch } from "./tavily";
-import { postToBand, createRoomWithAgents } from "./band";
+import { postToBand, createRoomWithAgents, bandConfigured } from "./band";
 import type { AgentId, CascadeEvent, CascadeStep } from "./types";
 
 const AGENT_KEYS: Record<AgentId, string> = {
@@ -322,12 +325,25 @@ export async function* runCascade(
     let roomId: string | undefined;
     if (opts?.newRoom !== false) {
       yield { type: "status", message: "Creating a fresh Band room…" };
-      const created = await createRoomWithAgents();
-      if (created) {
-        roomId = created;
-        yield { type: "status", message: `New Band room ready: ${created}` };
+      // Surface WHY room creation failed so it's diagnosable in the UI/logs
+      // (almost always: Band env keys missing or still the `your_` placeholder).
+      if (!bandConfigured()) {
+        yield {
+          type: "status",
+          message:
+            "Band not configured (OBSERVER_API_KEY missing/placeholder) — using default room.",
+        };
       } else {
-        yield { type: "status", message: "Could not create a new room — using default." };
+        const created = await createRoomWithAgents();
+        if (created) {
+          roomId = created;
+          yield { type: "status", message: `New Band room ready: ${created}` };
+        } else {
+          yield {
+            type: "status",
+            message: "Band room creation failed (API error/rate-limit) — using default room.",
+          };
+        }
       }
     }
 
@@ -340,92 +356,6 @@ export async function* runCascade(
   } finally {
     cascadeRunning = false;
   }
-}
-
-// Helper to run two generators in parallel
-async function* mergeGenerators(
-  triageGen: AsyncGenerator<CascadeEvent, CascadeStep>,
-  managementGen: AsyncGenerator<CascadeEvent, CascadeStep>
-): AsyncGenerator<CascadeEvent, { triageStep: CascadeStep | null; managementStep: CascadeStep | null }> {
-  const queue: CascadeEvent[] = [];
-  let resolveNext: (() => void) | null = null;
-
-  let triageStep: CascadeStep | null = null;
-  let managementStep: CascadeStep | null = null;
-  let triageDone = false;
-  let managementDone = false;
-
-  const pushEvent = (ev: CascadeEvent) => {
-    queue.push(ev);
-    resolveNext?.();
-    resolveNext = null;
-  };
-
-  const runTriage = async () => {
-    try {
-      while (true) {
-        const next = await triageGen.next();
-        if (next.done) {
-          triageStep = next.value;
-          triageDone = true;
-          resolveNext?.();
-          resolveNext = null;
-          break;
-        }
-        pushEvent(next.value);
-      }
-    } catch (err) {
-      triageDone = true;
-      pushEvent({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
-      resolveNext?.();
-      resolveNext = null;
-    }
-  };
-
-  const runManagement = async () => {
-    try {
-      while (true) {
-        const next = await managementGen.next();
-        if (next.done) {
-          managementStep = next.value;
-          managementDone = true;
-          resolveNext?.();
-          resolveNext = null;
-          break;
-        }
-        pushEvent(next.value);
-      }
-    } catch (err) {
-      managementDone = true;
-      pushEvent({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
-      resolveNext?.();
-      resolveNext = null;
-    }
-  };
-
-  const triagePromise = runTriage();
-  const managementPromise = runManagement();
-
-  while (!triageDone || !managementDone || queue.length > 0) {
-    if (queue.length > 0) {
-      yield queue.shift()!;
-    } else {
-      await new Promise<void>((r) => (resolveNext = r));
-    }
-  }
-
-  await Promise.all([triagePromise, managementPromise]);
-
-  return {
-    triageStep,
-    managementStep,
-  };
 }
 
 async function* runCascadeInner(
@@ -464,39 +394,21 @@ async function* runCascadeInner(
     trustedMedicalSearch(patientCase + " management guideline"),
   ]).then(([pubmed, web]) => `\n\n---\n\nPUBMED EVIDENCE:\n${pubmed}\n\nTRUSTED GUIDELINES:\n${web}`);
 
-  // ── PHASE 1: Triage & Management run in parallel ──
+  // ── PHASE 1: Triage ONLY — streams, then pauses for clinician verification
+  //    BEFORE the management plan is built. Running Triage alone (rather than
+  //    merging two parallel generators) makes the pause appear immediately when
+  //    triage finishes and structurally avoids the parallel-merge deadlock. ──
   yield { type: "status", agent: "triage", agentName: "TriageAgent", message: "TriageAgent is working…" };
-  yield {
-    type: "status",
-    agent: "management",
-    agentName: "ManagementAgent",
-    message: "ManagementAgent building evidence-based plan…",
-  };
   countStep();
-  countStep();
-
-  const triageGen = runAgent("triage", caseBlock, "investigation", roomId);
-  const startManagement = async function* () {
-    const evidence = await evidencePromise;
-    return yield* runAgent(
-      "management",
-      `${finalManagementCaseBlock}\n\n${evidence}`,
-      "investigation",
-      roomId
-    );
-  };
-  const managementGen = startManagement();
-
-  let { triageStep, managementStep } = yield* mergeGenerators(triageGen, managementGen);
+  let triageStep: CascadeStep | null = yield* runAgent("triage", caseBlock, "management", roomId);
 
   let triageContent = triageStep?.content || "";
-  let managementContent = managementStep?.content || "";
 
-  // ── HUMAN-IN-THE-LOOP PAUSE POINT (after both parallel Triage and Management finish) ──
+  // ── HUMAN-IN-THE-LOOP PAUSE POINT (right after triage) ──
   yield {
     type: "pause",
     runId,
-    message: "Triage & Management complete — awaiting clinician verification before proceeding.",
+    message: "Triage complete — awaiting clinician verification before management planning.",
   };
 
   const resumePromise = new Promise<ResumeData>((resolve) => {
@@ -514,6 +426,26 @@ async function* runCascadeInner(
       yield { type: "step", agent: "triage", agentName: "TriageAgent", step: triageStep };
     }
   }
+
+  // ── PHASE 2: Management plan — runs AFTER verification, informed by the
+  //    verified triage + any clinician note. Streams live. ──
+  const clinicianNote =
+    resumeData.approved && resumeData.note ? `\n\nCLINICIAN INPUT:\n${resumeData.note}` : "";
+  yield {
+    type: "status",
+    agent: "management",
+    agentName: "ManagementAgent",
+    message: "ManagementAgent building evidence-based plan…",
+  };
+  countStep();
+  const evidence = await evidencePromise;
+  let managementStep: CascadeStep | null = yield* runAgent(
+    "management",
+    `${finalManagementCaseBlock}\n\nVERIFIED TRIAGE:\n${triageContent}${clinicianNote}${evidence}`,
+    "investigation",
+    roomId
+  );
+  let managementContent = managementStep?.content || "";
 
   // Helper to compile transcript for sequential agents
   let investigationContent = "";
