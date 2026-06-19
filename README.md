@@ -23,7 +23,7 @@ In a fast-paced emergency department, a single case touches triage, care plannin
 | Agent | Role / Responsibility | Model | Provider |
 |-------|-----------------------|-------|----------|
 | **Triage** | Assigns Australasian Triage Scale (ATS 1–5) and logs reasoning | `anthropic/claude-sonnet-4.6` | **OpenRouter** |
-| **Management** | Evidence-based initial care plan (PubMed + Tavily whitelisted guidelines) | `deepseek-ai/DeepSeek-V4-Flash` | **Featherless** |
+| **Management** | Evidence-based initial care plan (PubMed + Tavily whitelisted guidelines) | `deepseek-ai/DeepSeek-V4-Pro` | **Featherless** |
 | **Investigation** | Prioritised diagnostic labs, imaging, and bedside diagnostics | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
 | **Documentation** | Compiles case facts into a structured, standard EHR clinical note | `Qwen/Qwen2.5-32B-Instruct` | **Featherless** |
 | **Observer (Audit)** | Audits every agent output against its clinical contract | `mistralai/Mistral-Small-24B-Instruct` | **Featherless** |
@@ -32,7 +32,7 @@ In a fast-paced emergency department, a single case touches triage, care plannin
 
 We use [Featherless AI](https://featherless.ai) serverless inference to host open-source models optimized for latency, budget, and instruction-following:
 - **Triage** runs on **Claude Sonnet 4.6** via OpenRouter to keep it off the Featherless concurrency budget, allowing Triage and Management planning to run in parallel without hitting limits.
-- **Management** utilizes **DeepSeek-V4-Flash** for high-speed, structured care plan formulation.
+- **Management** utilizes **DeepSeek-V4-Pro** for high-quality, structured care plan formulation.
 - **Investigation** and **Observer** run **Mistral-Small-24B** for fast instruction following and reliable auditing.
 - **Documentation** runs **Qwen2.5-32B-Instruct** for detailed, standard-compliant EHR clinical summaries.
 

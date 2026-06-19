@@ -16,6 +16,16 @@ const ATS_THEME: Record<TriageData["color"], { bg: string; fg: string; ring: str
   WHITE: { bg: "#f6f0e4", fg: "#1e2a44", ring: "#d8ccb4", label: "Non-urgent" },
 };
 
+// Hide the trailing machine-readable JSON block from the live preview — even
+// while it's still streaming and the fence/brace isn't closed yet.
+function stripStreamingJson(text: string): string {
+  const fence = text.search(/```json/i);
+  if (fence !== -1) return text.slice(0, fence).trim();
+  const brace = text.search(/\{\s*"ats"/i);
+  if (brace !== -1) return text.slice(0, brace).trim();
+  return text;
+}
+
 function fmt(s: number): string {
   if (s <= 0) return "00:00";
   const m = Math.floor(s / 60);
@@ -72,6 +82,10 @@ export function TriagePanel({
   // show the live tokens (markdown-rendered) inside the card area.
   const streaming = !triage && !!liveText && liveText.trim().length > 0;
 
+  // Prefer the vitals the Triage agent emitted as structured JSON; fall back to
+  // the regex-parsed vitals from the raw case only if the agent provided none.
+  const shownVitals = triage?.vitals && triage.vitals.length > 0 ? triage.vitals : vitals;
+
   return (
     <div className="space-y-4">
       {/* Live triage stream — shown until the parsed urgency card is ready */}
@@ -86,7 +100,9 @@ export function TriagePanel({
             Triage assessing…
           </div>
           <div className="md text-[0.9rem] leading-snug text-navy/90">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveText}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {stripStreamingJson(liveText ?? "")}
+            </ReactMarkdown>
           </div>
         </motion.div>
       )}
@@ -143,11 +159,11 @@ export function TriagePanel({
           <Heartbeat size={15} weight="bold" />
           Clinical vitals
         </div>
-        {vitals.length === 0 ? (
+        {shownVitals.length === 0 ? (
           <p className="text-sm text-navy/45">No vitals parsed from the case.</p>
         ) : (
           <div className="grid grid-cols-2 gap-2.5">
-            {vitals.map((v) => (
+            {shownVitals.map((v) => (
               <div
                 key={v.label}
                 className={`rounded-2xl border px-3 py-2.5 ${

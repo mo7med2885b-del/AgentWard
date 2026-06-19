@@ -198,7 +198,7 @@ export function Console() {
       }
 
       try {
-        await fetch("/api/run/resume", {
+        const res = await fetch("/api/run/resume", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -208,12 +208,18 @@ export function Console() {
             note: d.note,
           }),
         });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `Failed to resume pipeline (status ${res.status})`);
+        }
         // Don't consume the response — it's just JSON { success: true }.
         // Don't set running=false — the original SSE stream from /api/run is
         // still alive and the run() function's consume() will pick up the
         // remaining agent events as the generator continues.
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        setRunning(false);
+        setStatusLine("");
       }
     },
     [runId, outputs.triage]

@@ -52,6 +52,7 @@ export interface TriageData {
   maxWaitMinutes: number;
   summary: string;
   rationale: string; // concise justification for the ATS level (for HITL verify)
+  vitals?: Vital[]; // structured vitals the agent extracted (preferred over regex)
 }
 
 // Parsed from ManagementAgent output

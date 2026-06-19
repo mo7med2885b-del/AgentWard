@@ -61,6 +61,15 @@ TRIAGE: ATS [N] | [Category] | Color: [COLOR] | Max wait: [X] minutes
 **SUMMARY:** [1-2 sentences: primary concern + physiological basis]
 **RATIONALE:** [Concise 1-2 sentence justification: which specific vital signs, symptoms, or clinical criteria drove this ATS assignment. Be specific — e.g. "HR 118 + BP 88/60 = haemodynamic compromise → ATS 2"]
 
+Then, on the LAST line, output a single machine-readable JSON block with the
+structured data extracted from the case. Use EXACTLY this format (a \`\`\`json
+fenced block), and mark a vital "abnormal": true when it is outside the normal
+adult range. Only include vitals actually present in the case; omit unknown ones.
+
+\`\`\`json
+{"ats":2,"category":"Emergency","color":"ORANGE","maxWaitMinutes":10,"vitals":[{"label":"BP","value":"158/94 mmHg","abnormal":false},{"label":"HR","value":"102 bpm","abnormal":true},{"label":"RR","value":"20 /min","abnormal":false},{"label":"SpO₂","value":"97%","abnormal":false},{"label":"Temp","value":"38.9 °C","abnormal":true},{"label":"GCS","value":"14/15","abnormal":true}]}
+\`\`\`
+
 ${NO_TABLES}`,
 
   management: `You are a senior Emergency Medicine physician. You receive a triaged patient case and produce an evidence-based initial management plan. You have been given relevant PubMed evidence and trusted-guideline excerpts in the user message — USE THEM and cite them.

@@ -51,7 +51,10 @@ const FALLBACK: ModelRoute = { provider: "featherless", model: "Qwen/Qwen2.5-32B
 //   observer/audit -> fast validation model (Mistral-Small-24B)
 export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
   triage: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-  management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Flash" },
+  // NOTE: DeepSeek-V4-Flash on Featherless returns malformed JSON (duplicate
+  // "content" keys) -> empty parse -> Management silently failed. Use V4-Pro,
+  // which returns clean responses and is at least as capable for care plans.
+  management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Pro" },
   investigation: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
   documentation: { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" },
   observer: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },

@@ -23,36 +23,80 @@ const ATS_COLOR: Record<number, TriageData["color"]> = {
   5: "WHITE",
 };
 
+// Pull the machine-readable JSON block the triage agent appends, if present.
+function extractTriageJson(content: string): Partial<{
+  ats: number;
+  category: string;
+  color: string;
+  maxWaitMinutes: number;
+  vitals: Vital[];
+}> | null {
+  // Prefer a ```json fenced block; fall back to the last {...} containing "ats".
+  const fenced = content.match(/```json\s*([\s\S]*?)```/i);
+  const raw = fenced?.[1]?.trim() ?? content.match(/\{[^{}]*"ats"[\s\S]*\}/i)?.[0];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Remove the JSON block (and its fence) from triage text for display. */
+export function stripTriageJson(content: string): string {
+  return content
+    .replace(/```json[\s\S]*?```/gi, "")
+    .replace(/\{[^{}]*"ats"[\s\S]*\}/i, "")
+    .trim();
+}
+
 /** Extract the ATS triage assessment from the TriageAgent output. */
 export function parseTriage(content: string): TriageData | null {
   if (!content) return null;
 
+  const json = extractTriageJson(content);
+
   // Canonical line: "TRIAGE: ATS [N] | [Category] | Color: [COLOR] | Max wait: [X] minutes"
-  // Be permissive: ATS number may be in brackets or bare.
+  // Be permissive: ATS number may be in brackets or bare. Prefer the JSON value.
   const atsMatch = content.match(/ATS\s*\[?\s*([1-5])\s*\]?/i);
-  if (!atsMatch) return null;
-  const atsLevel = Number(atsMatch[1]) as TriageData["atsLevel"];
+  const atsFromJson = json?.ats && json.ats >= 1 && json.ats <= 5 ? json.ats : null;
+  if (!atsMatch && !atsFromJson) return null;
+  const atsLevel = (atsFromJson ?? Number(atsMatch![1])) as TriageData["atsLevel"];
 
   const waitMatch = content.match(/max\s*wait[:\s]*\[?\s*(immediate|\d+)/i);
   let maxWaitMinutes = ATS_WAIT[atsLevel];
-  if (waitMatch) {
+  if (typeof json?.maxWaitMinutes === "number") {
+    maxWaitMinutes = json.maxWaitMinutes;
+  } else if (waitMatch) {
     const raw = waitMatch[1].toLowerCase();
     maxWaitMinutes = raw === "immediate" ? 0 : Number(raw);
   }
 
   const colorMatch = content.match(/color[:\s]*\[?\s*(RED|ORANGE|YELLOW|GREEN|WHITE)/i);
-  const color = (colorMatch?.[1]?.toUpperCase() as TriageData["color"]) || ATS_COLOR[atsLevel];
+  const color =
+    (json?.color?.toUpperCase() as TriageData["color"]) ||
+    (colorMatch?.[1]?.toUpperCase() as TriageData["color"]) ||
+    ATS_COLOR[atsLevel];
 
   const catMatch = content.match(/ATS\s*\[?\s*[1-5]\s*\]?\s*\|\s*([A-Za-z-]+)/);
-  const category = catMatch?.[1]?.trim() || ATS_CATEGORY[atsLevel];
+  const category = json?.category || catMatch?.[1]?.trim() || ATS_CATEGORY[atsLevel];
+
+  // Vitals the agent extracted (preferred); undefined → UI falls back to regex.
+  const vitals: Vital[] | undefined =
+    Array.isArray(json?.vitals) && json.vitals.length > 0
+      ? json.vitals.filter((v) => v && v.label && v.value)
+      : undefined;
+
+  // Match prose against the JSON-stripped text so the block never leaks in.
+  const prose = stripTriageJson(content);
 
   // Summary: prefer the **SUMMARY:** line, else first non-triage sentence.
   let summary = "";
-  const sumMatch = content.match(/\*\*?summary:?\*\*?\s*(.+)/i);
+  const sumMatch = prose.match(/\*\*?summary:?\*\*?\s*(.+)/i);
   if (sumMatch) {
     summary = sumMatch[1].trim();
   } else {
-    const lines = content
+    const lines = prose
       .split("\n")
       .map((l) => l.replace(/[*_#]/g, "").trim())
       .filter((l) => l && !/^triage:/i.test(l) && !/^ATS\b/i.test(l));
@@ -60,10 +104,10 @@ export function parseTriage(content: string): TriageData | null {
   }
 
   // Rationale: prefer the explicit **RATIONALE:** line; fall back to summary.
-  const ratMatch = content.match(/\*\*?rationale:?\*\*?\s*(.+)/i);
+  const ratMatch = prose.match(/\*\*?rationale:?\*\*?\s*(.+)/i);
   const rationale = ratMatch ? ratMatch[1].trim() : summary;
 
-  return { atsLevel, category, color, maxWaitMinutes, summary, rationale };
+  return { atsLevel, category, color, maxWaitMinutes, summary, rationale, vitals };
 }
 
 /** Extract checkable "Immediate Actions" from the ManagementAgent output. */
