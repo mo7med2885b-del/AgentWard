@@ -368,6 +368,8 @@ async function* mergeGenerators(
         if (next.done) {
           triageStep = next.value;
           triageDone = true;
+          resolveNext?.();
+          resolveNext = null;
           break;
         }
         pushEvent(next.value);
@@ -378,6 +380,8 @@ async function* mergeGenerators(
         type: "error",
         message: err instanceof Error ? err.message : String(err),
       });
+      resolveNext?.();
+      resolveNext = null;
     }
   };
 
@@ -388,6 +392,8 @@ async function* mergeGenerators(
         if (next.done) {
           managementStep = next.value;
           managementDone = true;
+          resolveNext?.();
+          resolveNext = null;
           break;
         }
         pushEvent(next.value);
@@ -398,6 +404,8 @@ async function* mergeGenerators(
         type: "error",
         message: err instanceof Error ? err.message : String(err),
       });
+      resolveNext?.();
+      resolveNext = null;
     }
   };
 
