@@ -51,10 +51,10 @@ const FALLBACK: ModelRoute = { provider: "featherless", model: "Qwen/Qwen2.5-32B
 //   observer/audit -> fast validation model (Mistral-Small-24B)
 export const AGENT_ROUTES: Record<AgentId, ModelRoute> = {
   triage: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-  // DeepSeek-V4-Flash — fast care-plan model. (V4-Flash can emit chunks the
-  // strict JSON parser chokes on; the stream parser below tolerates that and a
-  // non-stream retry covers any residual empty-content case.)
-  management: { provider: "featherless", model: "deepseek-ai/DeepSeek-V4-Flash" },
+  // Gemini 3 Flash via OpenRouter — fast, reliable care-plan model. (Runs on
+  // OpenRouter, off the Featherless concurrency budget; falls back to Qwen on
+  // Featherless if OpenRouter is unavailable.)
+  management: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
   investigation: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
   documentation: { provider: "featherless", model: "Qwen/Qwen2.5-32B-Instruct" },
   observer: { provider: "featherless", model: "mistralai/Mistral-Small-24B-Instruct-2501" },
