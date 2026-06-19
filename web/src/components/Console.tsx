@@ -47,7 +47,7 @@ export function Console() {
 
   // HITL / safety / correction transient UI state.
   const [paused, setPaused] = useState(false);
-  const [runId, setRunId] = useState("");
+  const [, setRunId] = useState(""); // runId no longer read (HITL is client-side now)
   const [safety, setSafety] = useState("");
   const [safetyClear, setSafetyClear] = useState("");
   const [correcting, setCorrecting] = useState("");
@@ -122,6 +122,13 @@ export function Console() {
       if (step.agent === "management") {
         setActions(parseActions(step.content));
       }
+      // HITL demo beat: when triage lands, show the verification overlay. The
+      // server runs straight through (AUTO_APPROVE=1) so Management keeps
+      // streaming behind the overlay — Approve is now a local dismiss.
+      if (step.agent === "triage") {
+        setPaused(true);
+        setStatusLine("Paused for clinical verification…");
+      }
     } else if (ev.type === "pause") {
       setPaused(true);
       setStatusLine("Paused for clinical verification…");
@@ -186,10 +193,14 @@ export function Console() {
   // The original /api/run SSE connection is still alive — the run() function's
   // consume() call will continue reading remaining events once the server-side
   // promise is resolved. We just need to fire the resume call and let it go.
+  // Resolve the HITL checkpoint. The server runs straight through
+  // (AUTO_APPROVE=1) so there is no paused run to resume — Management is already
+  // streaming behind the overlay. Approve is a purely local dismiss; we only
+  // apply an optional ATS-override display tweak for instant dashboard feedback.
   const resolveHitl = useCallback(
     async (d: HitlDecision) => {
       setPaused(false);
-      setStatusLine("Resuming pipeline…");
+      setStatusLine("");
 
       // Apply an ATS override locally for instant dashboard feedback.
       if (d.atsOverride && outputs.triage) {
@@ -201,33 +212,8 @@ export function Console() {
           },
         }));
       }
-
-      try {
-        const res = await fetch("/api/run/resume", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            runId,
-            approved: d.approved,
-            atsOverride: d.atsOverride,
-            note: d.note,
-          }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `Failed to resume pipeline (status ${res.status})`);
-        }
-        // Don't consume the response — it's just JSON { success: true }.
-        // Don't set running=false — the original SSE stream from /api/run is
-        // still alive and the run() function's consume() will pick up the
-        // remaining agent events as the generator continues.
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setRunning(false);
-        setStatusLine("");
-      }
     },
-    [runId, outputs.triage]
+    [outputs.triage]
   );
 
   const toggleAction = useCallback((id: string) => {
